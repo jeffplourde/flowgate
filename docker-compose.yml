@@ -1,0 +1,62 @@
+services:
+  nats:
+    image: nats:latest
+    command: ["-c", "/etc/nats/nats-server.conf"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    volumes:
+      - ./nats-server.conf:/etc/nats/nats-server.conf:ro
+      - nats-data:/data
+
+  nats-setup:
+    image: natsio/nats-box
+    depends_on:
+      - nats
+    volumes:
+      - ./scripts/setup-nats.sh:/scripts/setup-nats.sh:ro
+    entrypoint: ["/bin/sh", "/scripts/setup-nats.sh"]
+    environment:
+      NATS_URL: nats://nats:4222
+    restart: "no"
+
+  flowgate:
+    build:
+      context: .
+      target: flowgate-service
+    depends_on:
+      nats-setup:
+        condition: service_completed_successfully
+    environment:
+      NATS_URL: nats://nats:4222
+      RUST_LOG: flowgate=info
+    ports:
+      - "9090:9090"
+
+  producer:
+    build:
+      context: .
+      target: flowgate-producer
+    depends_on:
+      nats-setup:
+        condition: service_completed_successfully
+    environment:
+      NATS_URL: nats://nats:4222
+      DISTRIBUTION: beta
+      RATE: "500"
+      BURST_INTERVAL: "30"
+      BURST_MULTIPLIER: "5"
+      BURST_DURATION: "2"
+      RUST_LOG: flowgate_producer=info
+
+  prometheus:
+    image: prom/prometheus
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    profiles:
+      - monitoring
+
+volumes:
+  nats-data:
