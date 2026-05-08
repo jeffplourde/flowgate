@@ -1,10 +1,8 @@
-use std::collections::HashMap;
 use std::time::Duration;
 
 use clap::Parser;
 use rand::Rng;
 use rand_distr::{Beta, Distribution, Normal, Uniform};
-use serde::Serialize;
 use tokio::time::Instant;
 use tracing::info;
 
@@ -65,13 +63,6 @@ impl std::fmt::Display for DistributionType {
             Self::Bimodal => write!(f, "bimodal"),
         }
     }
-}
-
-#[derive(Serialize)]
-struct Envelope<'a> {
-    score: f64,
-    metadata: HashMap<&'a str, serde_json::Value>,
-    payload: serde_json::Value,
 }
 
 fn sample_score(rng: &mut impl Rng, dist: &DistributionType) -> f64 {
@@ -151,28 +142,21 @@ async fn main() -> Result<(), async_nats::Error> {
         let score = sample_score(&mut rng, &args.distribution);
         seq += 1;
 
-        let envelope = Envelope {
-            score,
-            metadata: HashMap::from([
-                (
-                    "source",
-                    serde_json::Value::String("flowgate-producer".into()),
-                ),
-                (
-                    "distribution",
-                    serde_json::Value::String(args.distribution.to_string()),
-                ),
-                ("seq", serde_json::json!(seq)),
-            ]),
-            payload: serde_json::json!({
-                "demo": true,
-                "seq": seq,
-                "elapsed_ms": start.elapsed().as_millis() as u64,
-            }),
-        };
+        let mut headers = async_nats::HeaderMap::new();
+        headers.insert("Flowgate-Score", format!("{score:.6}").as_str());
+        headers.insert("Flowgate-Source", "flowgate-producer");
+        headers.insert(
+            "Flowgate-Distribution",
+            args.distribution.to_string().as_str(),
+        );
+        headers.insert("Flowgate-Seq", seq.to_string().as_str());
 
-        let data = serde_json::to_vec(&envelope)?;
-        js.publish(args.subject.clone(), data.into()).await?;
+        // Body is an opaque payload — in a real system this would be
+        // whatever the ML pipeline produces (protobuf, msgpack, etc.)
+        let payload = format!(r#"{{"demo":true,"seq":{seq}}}"#);
+
+        js.publish_with_headers(args.subject.clone(), headers, payload.into())
+            .await?;
 
         if seq.is_multiple_of(1000) {
             info!(seq, score, in_burst, "published 1000 messages");

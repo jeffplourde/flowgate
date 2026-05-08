@@ -4,13 +4,12 @@ use std::time::Duration;
 use async_nats::jetstream;
 use async_nats::jetstream::consumer::pull::Config as ConsumerConfig;
 use async_nats::jetstream::stream::Config as StreamConfig;
-use bytes::Bytes;
 use futures::StreamExt;
 use tokio::sync::{watch, Mutex};
 use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
-use crate::envelope::Envelope;
+use crate::envelope::{self, STATE_HEADER, THRESHOLD_HEADER};
 use crate::metrics as m;
 use crate::threshold::ThresholdController;
 
@@ -96,11 +95,10 @@ async fn process_message(
 ) {
     m::record_received();
 
-    let payload = &msg.payload;
-    let envelope: Envelope = match serde_json::from_slice(payload) {
-        Ok(env) => env,
-        Err(e) => {
-            warn!(error = %e, "failed to parse envelope, skipping");
+    let score = match envelope::extract_score(msg.headers.as_ref()) {
+        Some(s) => s,
+        None => {
+            warn!("message missing or invalid Flowgate-Score header, skipping");
             m::record_rejected();
             return;
         }
@@ -108,34 +106,30 @@ async fn process_message(
 
     let passes = {
         let mut ctrl = controller.lock().await;
-        ctrl.check(envelope.score)
+        ctrl.check(score)
     };
 
     if passes {
         m::record_emitted();
 
-        let mut headers = async_nats::HeaderMap::new();
+        let mut headers = msg.headers.clone().unwrap_or_default();
         let ctrl = controller.lock().await;
         headers.insert(
-            "Flowgate-Threshold",
+            THRESHOLD_HEADER,
             format!("{:.6}", ctrl.threshold()).as_str(),
         );
-        headers.insert("Flowgate-State", ctrl.state_name());
+        headers.insert(STATE_HEADER, ctrl.state_name());
         drop(ctrl);
 
         if let Err(e) = js
-            .publish_with_headers(
-                SUBJECT_OUT.to_string(),
-                headers,
-                Bytes::copy_from_slice(payload),
-            )
+            .publish_with_headers(SUBJECT_OUT.to_string(), headers, msg.payload.clone())
             .await
         {
             error!(error = %e, "failed to publish to output stream");
         }
     } else {
         m::record_rejected();
-        debug!(score = envelope.score, "message rejected");
+        debug!(score, "message rejected");
     }
 }
 

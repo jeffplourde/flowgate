@@ -19,18 +19,23 @@ Adaptive threshold rate controller for ML prediction pipelines. Sits between a p
 
 ## Message Format
 
-```json
-{
-  "score": 0.87,
-  "metadata": {
-    "source_id": "model-v2",
-    "category": "fraud"
-  },
-  "payload": { "your": "data", "here": true }
-}
+Flowgate treats the message body as **completely opaque bytes** — it never inspects or parses the payload. The prediction score is carried in a NATS header:
+
+```
+NATS Headers:
+  Flowgate-Score: 0.87
+
+Body: <your data in any format — protobuf, msgpack, JSON, raw bytes, anything>
 ```
 
-Flowgate reads `score` to make the threshold decision. `metadata` and `payload` are passed through untouched. Output messages are republished as-is with `Flowgate-Threshold` and `Flowgate-State` headers added.
+Flowgate reads the `Flowgate-Score` header to make the threshold decision. If the message passes, it is republished to the output subject with the original body and headers intact, plus two additional headers:
+
+```
+Flowgate-Threshold: 0.650000    (the threshold that was applied)
+Flowgate-State: pid             (controller state: cold_start, warmup, pid, fixed)
+```
+
+This design means Flowgate works with any serialization format — your pipeline doesn't need to change its wire format to use it.
 
 ## Quick Start (Docker Compose)
 

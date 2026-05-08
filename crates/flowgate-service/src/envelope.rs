@@ -1,14 +1,11 @@
-use std::collections::HashMap;
+use async_nats::HeaderMap;
 
-use serde::{Deserialize, Serialize};
+pub const SCORE_HEADER: &str = "Flowgate-Score";
+pub const THRESHOLD_HEADER: &str = "Flowgate-Threshold";
+pub const STATE_HEADER: &str = "Flowgate-State";
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Envelope<'a> {
-    pub score: f64,
-    #[serde(default)]
-    pub metadata: HashMap<String, serde_json::Value>,
-    #[serde(borrow)]
-    pub payload: &'a serde_json::value::RawValue,
+pub fn extract_score(headers: Option<&HeaderMap>) -> Option<f64> {
+    headers?.get(SCORE_HEADER)?.as_str().parse().ok()
 }
 
 #[cfg(test)]
@@ -16,32 +13,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn round_trip() {
-        let json =
-            r#"{"score":0.87,"metadata":{"model":"v2"},"payload":{"user_id":42,"data":[1,2,3]}}"#;
-        let env: Envelope = serde_json::from_str(json).unwrap();
-
-        assert!((env.score - 0.87).abs() < f64::EPSILON);
-        assert_eq!(env.metadata["model"], "v2");
-        assert_eq!(env.payload.get(), r#"{"user_id":42,"data":[1,2,3]}"#);
-
-        let serialized = serde_json::to_string(&env).unwrap();
-        let re_parsed: Envelope = serde_json::from_str(&serialized).unwrap();
-        assert!((re_parsed.score - 0.87).abs() < f64::EPSILON);
+    fn extract_valid_score() {
+        let mut headers = HeaderMap::new();
+        headers.insert(SCORE_HEADER, "0.87");
+        assert!((extract_score(Some(&headers)).unwrap() - 0.87).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn minimal_message() {
-        let json = r#"{"score":0.5,"payload":null}"#;
-        let env: Envelope = serde_json::from_str(json).unwrap();
-        assert!((env.score - 0.5).abs() < f64::EPSILON);
-        assert!(env.metadata.is_empty());
+    fn extract_missing_header() {
+        let headers = HeaderMap::new();
+        assert!(extract_score(Some(&headers)).is_none());
     }
 
     #[test]
-    fn payload_is_opaque() {
-        let json = r#"{"score":0.1,"payload":"just a string"}"#;
-        let env: Envelope = serde_json::from_str(json).unwrap();
-        assert_eq!(env.payload.get(), r#""just a string""#);
+    fn extract_no_headers() {
+        assert!(extract_score(None).is_none());
+    }
+
+    #[test]
+    fn extract_invalid_score() {
+        let mut headers = HeaderMap::new();
+        headers.insert(SCORE_HEADER, "not_a_number");
+        assert!(extract_score(Some(&headers)).is_none());
     }
 }
