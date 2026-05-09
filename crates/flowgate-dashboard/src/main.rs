@@ -46,6 +46,13 @@ struct Args {
     )]
     kv_bucket_producer: String,
 
+    #[arg(
+        long,
+        env = "PRODUCER_METRICS",
+        default_value = "http://localhost:9092"
+    )]
+    producer_metrics: String,
+
     #[arg(long, env = "STATIC_DIR", default_value = "./dashboard/dist")]
     static_dir: String,
 }
@@ -57,6 +64,7 @@ pub struct AppState {
     pub kv_bucket_producer: String,
     pub flowgate_a_metrics: String,
     pub flowgate_b_metrics: String,
+    pub producer_metrics: String,
     pub event_tx: broadcast::Sender<ws::Event>,
 }
 
@@ -85,6 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         kv_bucket_producer: args.kv_bucket_producer,
         flowgate_a_metrics: args.flowgate_a_metrics.clone(),
         flowgate_b_metrics: args.flowgate_b_metrics.clone(),
+        producer_metrics: args.producer_metrics.clone(),
         event_tx: event_tx.clone(),
     });
 
@@ -110,9 +119,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Spawn metrics scraper
     let metrics_a = args.flowgate_a_metrics.clone();
     let metrics_b = args.flowgate_b_metrics.clone();
+    let metrics_producer = args.producer_metrics.clone();
     let tx_clone = event_tx.clone();
     tokio::spawn(async move {
-        ws::scrape_metrics_loop(metrics_a, metrics_b, tx_clone).await;
+        ws::scrape_metrics_loop(metrics_a, metrics_b, metrics_producer, tx_clone).await;
     });
 
     let app = Router::new()

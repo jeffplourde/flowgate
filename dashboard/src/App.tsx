@@ -4,7 +4,7 @@ import { ControlPanel } from "./components/ControlPanel";
 import { ProducerPanel } from "./components/ProducerPanel";
 
 function App() {
-  const { instanceA, instanceB, connected, updateConfig } =
+  const { instanceA, instanceB, producer, connected, updateConfig } =
     useFlowgateSocket();
 
   return (
@@ -20,6 +20,31 @@ function App() {
         minHeight: "100vh",
       }}
     >
+      {producer.backpressure && (
+        <div
+          style={{
+            background: "#c0392b",
+            color: "#fff",
+            padding: "10px 16px",
+            borderRadius: "6px",
+            marginBottom: "12px",
+            fontWeight: "bold",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
+          <span>
+            BACKPRESSURE: Producer publish calls are being rejected by NATS
+            ({producer.errors.toLocaleString()} errors)
+          </span>
+          <span style={{ fontSize: "12px", fontWeight: "normal" }}>
+            {producer.published.toLocaleString()} published /{" "}
+            {producer.batches.toLocaleString()} batches
+          </span>
+        </div>
+      )}
+
       <header
         style={{
           display: "flex",
@@ -37,21 +62,43 @@ function App() {
           style={{
             display: "flex",
             alignItems: "center",
-            gap: "8px",
+            gap: "16px",
             fontSize: "12px",
-            color: connected ? "#2ecc71" : "#e74c3c",
           }}
         >
           <span
             style={{
-              width: "8px",
-              height: "8px",
-              borderRadius: "50%",
-              background: connected ? "#2ecc71" : "#e74c3c",
-              display: "inline-block",
+              color: producer.backpressure ? "#e74c3c" : "#888",
             }}
-          />
-          {connected ? "Connected" : "Disconnected"}
+          >
+            Producer: {producer.activeClients} clients,{" "}
+            {producer.published.toLocaleString()} published
+            {producer.errors > 0 && (
+              <span style={{ color: "#e74c3c" }}>
+                {" "}
+                ({producer.errors.toLocaleString()} errors)
+              </span>
+            )}
+          </span>
+          <span
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "6px",
+              color: connected ? "#2ecc71" : "#e74c3c",
+            }}
+          >
+            <span
+              style={{
+                width: "8px",
+                height: "8px",
+                borderRadius: "50%",
+                background: connected ? "#2ecc71" : "#e74c3c",
+                display: "inline-block",
+              }}
+            />
+            {connected ? "Connected" : "Disconnected"}
+          </span>
         </div>
       </header>
 

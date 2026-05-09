@@ -2,9 +2,10 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import type {
   FlowgateEvent,
   InstanceState,
+  ProducerState,
   TimeSeriesPoint,
 } from "../types";
-import { EMPTY_INSTANCE } from "../types";
+import { EMPTY_INSTANCE, EMPTY_PRODUCER } from "../types";
 
 const MAX_SERIES_POINTS = 120;
 const MAX_SCORE_HISTORY = 500;
@@ -33,6 +34,9 @@ export function useFlowgateSocket() {
   const [instanceB, setInstanceB] = useState<InstanceState>({
     ...EMPTY_INSTANCE,
   });
+  const [producer, setProducer] = useState<ProducerState>({
+    ...EMPTY_PRODUCER,
+  });
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -52,6 +56,19 @@ export function useFlowgateSocket() {
 
     ws.onmessage = (evt) => {
       const event: FlowgateEvent = JSON.parse(evt.data);
+
+      if (event.instance === "producer" && event.type === "metrics") {
+        const d = event.data;
+        setProducer({
+          published: d.producer_messages_published_total ?? 0,
+          errors: d.producer_publish_errors_total ?? 0,
+          batches: d.producer_batches_sent_total ?? 0,
+          activeClients: d.producer_active_clients ?? 0,
+          backpressure: (d.producer_backpressure ?? 0) > 0.5,
+        });
+        return;
+      }
+
       const setter = event.instance === "a" ? setInstanceA : setInstanceB;
 
       if (event.type === "score") {
@@ -111,5 +128,5 @@ export function useFlowgateSocket() {
     []
   );
 
-  return { instanceA, instanceB, connected, updateConfig };
+  return { instanceA, instanceB, producer, connected, updateConfig };
 }

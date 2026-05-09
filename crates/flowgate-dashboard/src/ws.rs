@@ -136,11 +136,15 @@ const COUNTER_METRICS: &[&str] = &[
     "flowgate_messages_emitted_total",
     "flowgate_messages_rejected_total",
     "flowgate_buffer_evicted_total",
+    "producer_messages_published_total",
+    "producer_publish_errors_total",
+    "producer_batches_sent_total",
 ];
 
 pub async fn scrape_metrics_loop(
     metrics_a: String,
     metrics_b: String,
+    producer_metrics: String,
     tx: broadcast::Sender<Event>,
 ) {
     let client = reqwest::Client::builder()
@@ -152,7 +156,11 @@ pub async fn scrape_metrics_loop(
     loop {
         interval.tick().await;
 
-        for (instance, base_url) in [("a", &metrics_a), ("b", &metrics_b)] {
+        for (instance, base_url) in [
+            ("a", &metrics_a),
+            ("b", &metrics_b),
+            ("producer", &producer_metrics),
+        ] {
             let data = scrape_and_aggregate(&client, base_url).await;
             if !data.is_empty() {
                 let _ = tx.send(Event::Metrics {

@@ -3,6 +3,7 @@ use std::time::Duration;
 use async_nats::jetstream;
 use clap::Parser;
 use futures::StreamExt;
+use metrics::{counter, describe_counter, describe_gauge, gauge};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rand_distr::{Beta, Distribution, Normal, Uniform};
@@ -27,6 +28,32 @@ struct Args {
         default_value = "flowgate-producer-config"
     )]
     kv_bucket: String,
+
+    #[arg(long, env = "METRICS_PORT", default_value_t = 9090)]
+    metrics_port: u16,
+}
+
+fn register_metrics() {
+    describe_counter!(
+        "producer_messages_published_total",
+        "Messages successfully published"
+    );
+    describe_counter!(
+        "producer_publish_errors_total",
+        "Publish failures (backpressure/storage full)"
+    );
+    describe_counter!(
+        "producer_batches_sent_total",
+        "Batches sent across all clients"
+    );
+    describe_gauge!(
+        "producer_active_clients",
+        "Number of active simulated clients"
+    );
+    describe_gauge!(
+        "producer_backpressure",
+        "1 if recent publishes are failing, 0 if healthy"
+    );
 }
 
 #[derive(Debug, Clone)]
@@ -233,14 +260,24 @@ async fn client_loop(
 
             let payload = format!(r#"{{"client":{client_id},"seq":{seq}}}"#);
 
-            if let Err(e) = js
+            match js
                 .publish_with_headers(subject.clone(), headers, payload.into())
                 .await
             {
-                warn!(client_id, error = %e, "publish failed");
-                break;
+                Ok(_) => {
+                    counter!("producer_messages_published_total").increment(1);
+                    gauge!("producer_backpressure").set(0.0);
+                }
+                Err(e) => {
+                    counter!("producer_publish_errors_total").increment(1);
+                    gauge!("producer_backpressure").set(1.0);
+                    warn!(client_id, error = %e, "publish failed (backpressure?)");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
             }
         }
+
+        counter!("producer_batches_sent_total").increment(1);
 
         let interval = config.batch_interval();
         tokio::select! {
@@ -260,6 +297,12 @@ async fn main() -> Result<(), async_nats::Error> {
         .init();
 
     let args = Args::parse();
+
+    metrics_exporter_prometheus::PrometheusBuilder::new()
+        .with_http_listener(([0, 0, 0, 0], args.metrics_port))
+        .install()
+        .expect("failed to install prometheus exporter");
+    register_metrics();
 
     let client = async_nats::connect(&args.nats_url).await?;
     let js = async_nats::jetstream::new(client);
@@ -316,6 +359,7 @@ async fn main() -> Result<(), async_nats::Error> {
         }));
     }
 
+    gauge!("producer_active_clients").set(initial_config.num_clients as f64);
     info!(
         num_clients = initial_config.num_clients,
         "all clients spawned"

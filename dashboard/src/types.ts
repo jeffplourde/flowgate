@@ -40,6 +40,22 @@ export interface InstanceState {
   scoreHistory: number[];
 }
 
+export interface ProducerState {
+  published: number;
+  errors: number;
+  batches: number;
+  activeClients: number;
+  backpressure: boolean;
+}
+
+export const EMPTY_PRODUCER: ProducerState = {
+  published: 0,
+  errors: 0,
+  batches: 0,
+  activeClients: 0,
+  backpressure: false,
+};
+
 export const EMPTY_INSTANCE: InstanceState = {
   ingestionRate: [],
   emissionRate: [],

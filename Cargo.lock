@@ -515,6 +515,8 @@ dependencies = [
  "async-nats",
  "clap",
  "futures",
+ "metrics",
+ "metrics-exporter-prometheus",
  "rand 0.9.4",
  "rand_distr",
  "tokio",
