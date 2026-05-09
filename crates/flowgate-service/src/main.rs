@@ -1,3 +1,4 @@
+mod buffer;
 mod config;
 mod envelope;
 mod metrics;
@@ -11,6 +12,9 @@ use clap::Parser;
 use tokio::sync::{broadcast, watch, Mutex};
 use tracing::info;
 
+use crate::buffer::MessageBuffer;
+use crate::pipeline::PipelineConfig;
+
 #[derive(Parser)]
 #[command(name = "flowgate", about = "Adaptive threshold rate controller")]
 struct Args {
@@ -19,6 +23,18 @@ struct Args {
 
     #[arg(long, env = "METRICS_PORT", default_value_t = 9090)]
     metrics_port: u16,
+
+    #[arg(long, env = "NATS_KV_BUCKET", default_value = "flowgate-config")]
+    kv_bucket: String,
+
+    #[arg(long, env = "OUTPUT_SUBJECT", default_value = "flowgate.out")]
+    output_subject: String,
+
+    #[arg(long, env = "OUTPUT_STREAM", default_value = "FLOWGATE_OUT")]
+    output_stream: String,
+
+    #[arg(long, env = "CONSUMER_NAME")]
+    consumer_name: Option<String>,
 }
 
 #[tokio::main]
@@ -45,27 +61,39 @@ async fn main() -> Result<(), async_nats::Error> {
         "prometheus metrics server started"
     );
 
+    let pipeline_config = Arc::new(PipelineConfig {
+        output_subject: args.output_subject,
+        output_stream: args.output_stream,
+        consumer_name: args
+            .consumer_name
+            .unwrap_or_else(|| format!("flowgate-{}", args.kv_bucket)),
+    });
+
     let client = async_nats::connect(&args.nats_url).await?;
     info!(url = %args.nats_url, "connected to NATS");
 
     let js = async_nats::jetstream::new(client.clone());
 
-    pipeline::setup_streams(&js).await?;
+    pipeline::setup_streams(&js, &pipeline_config).await?;
 
     let kv_store = js
         .create_key_value(async_nats::jetstream::kv::Config {
-            bucket: config::KV_BUCKET.to_string(),
+            bucket: args.kv_bucket.clone(),
             history: 5,
             ..Default::default()
         })
         .await?;
-    info!("KV bucket ready");
+    info!(bucket = %args.kv_bucket, "KV bucket ready");
 
     let initial_config = config::load_initial_config(&kv_store).await;
     let (config_tx, config_rx) = watch::channel(initial_config.clone());
 
     let controller = Arc::new(Mutex::new(threshold::ThresholdController::new(
         &initial_config,
+    )));
+
+    let buffer = Arc::new(Mutex::new(MessageBuffer::new(
+        initial_config.max_buffer_duration_ms,
     )));
 
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
@@ -88,11 +116,42 @@ async fn main() -> Result<(), async_nats::Error> {
         })
     };
 
-    let consumer = {
+    let buffer_drainer = {
+        let js = js.clone();
         let controller = controller.clone();
+        let buffer = buffer.clone();
+        let pipeline_config = pipeline_config.clone();
+        let config_rx = config_rx.clone();
         let shutdown_rx = shutdown_tx.subscribe();
         tokio::spawn(async move {
-            if let Err(e) = pipeline::run_consumer(js, controller, config_rx, shutdown_rx).await {
+            pipeline::run_buffer_drainer(
+                js,
+                controller,
+                buffer,
+                pipeline_config,
+                config_rx,
+                shutdown_rx,
+            )
+            .await;
+        })
+    };
+
+    let consumer = {
+        let controller = controller.clone();
+        let buffer = buffer.clone();
+        let pipeline_config = pipeline_config.clone();
+        let shutdown_rx = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            if let Err(e) = pipeline::run_consumer(
+                js,
+                controller,
+                buffer,
+                pipeline_config,
+                config_rx,
+                shutdown_rx,
+            )
+            .await
+            {
                 tracing::error!(error = %e, "consumer failed");
             }
         })
@@ -107,7 +166,7 @@ async fn main() -> Result<(), async_nats::Error> {
 
     let _ = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        futures::future::join_all([consumer, pid_ticker]),
+        futures::future::join_all([consumer, pid_ticker, buffer_drainer]),
     )
     .await;
 

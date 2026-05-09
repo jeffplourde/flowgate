@@ -34,6 +34,19 @@ pub fn register() {
         "flowgate_warmup_samples_collected",
         "Samples collected during warmup phase"
     );
+    describe_gauge!("flowgate_buffer_size", "Messages currently in the buffer");
+    describe_counter!(
+        "flowgate_buffer_evicted_total",
+        "Messages evicted from buffer (expired)"
+    );
+    describe_gauge!(
+        "flowgate_avg_emitted_score",
+        "Exponential moving average of emitted message scores"
+    );
+    describe_gauge!(
+        "flowgate_avg_latency_ms",
+        "EMA of time from message arrival to emission"
+    );
 }
 
 pub fn record_received() {
@@ -84,4 +97,20 @@ pub fn set_controller_state(state: ControllerState) {
 
 pub fn set_warmup_samples(n: u64) {
     gauge!("flowgate_warmup_samples_collected").set(n as f64);
+}
+
+pub fn set_buffer_size(n: usize) {
+    gauge!("flowgate_buffer_size").set(n as f64);
+}
+
+pub fn record_evicted(n: usize) {
+    counter!("flowgate_buffer_evicted_total").increment(n as u64);
+}
+
+pub fn set_avg_emitted_score(v: f64) {
+    gauge!("flowgate_avg_emitted_score").set(v);
+}
+
+pub fn set_avg_latency_ms(v: f64) {
+    gauge!("flowgate_avg_latency_ms").set(v);
 }

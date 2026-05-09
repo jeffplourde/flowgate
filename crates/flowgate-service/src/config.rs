@@ -4,8 +4,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tracing::{info, warn};
 
-pub const KV_BUCKET: &str = "flowgate-config";
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub target_rate: f64,
@@ -20,13 +18,17 @@ pub struct Config {
     pub warmup_samples: u64,
     pub anti_windup_limit: f64,
     pub pid_interval_ms: u64,
+    pub max_buffer_duration_ms: u64,
+    pub drain_interval_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Algorithm {
     Pid,
     Fixed,
+    BufferedBatch,
+    BufferedStreaming,
 }
 
 impl Default for Config {
@@ -44,11 +46,20 @@ impl Default for Config {
             warmup_samples: 100,
             anti_windup_limit: 100.0,
             pid_interval_ms: 1000,
+            max_buffer_duration_ms: 5000,
+            drain_interval_ms: 100,
         }
     }
 }
 
 impl Config {
+    pub fn is_buffered(&self) -> bool {
+        matches!(
+            self.algorithm,
+            Algorithm::BufferedBatch | Algorithm::BufferedStreaming
+        )
+    }
+
     fn apply_kv_entry(&mut self, key: &str, value: &str) {
         match key {
             "target_rate" => {
@@ -96,6 +107,8 @@ impl Config {
             "algorithm" => match value {
                 "pid" => self.algorithm = Algorithm::Pid,
                 "fixed" => self.algorithm = Algorithm::Fixed,
+                "buffered_batch" => self.algorithm = Algorithm::BufferedBatch,
+                "buffered_streaming" => self.algorithm = Algorithm::BufferedStreaming,
                 _ => warn!(key, value, "unknown algorithm value"),
             },
             "warmup_samples" => {
@@ -111,6 +124,16 @@ impl Config {
             "pid_interval_ms" => {
                 if let Ok(v) = value.parse() {
                     self.pid_interval_ms = v;
+                }
+            }
+            "max_buffer_duration_ms" => {
+                if let Ok(v) = value.parse() {
+                    self.max_buffer_duration_ms = v;
+                }
+            }
+            "drain_interval_ms" => {
+                if let Ok(v) = value.parse() {
+                    self.drain_interval_ms = v;
                 }
             }
             _ => {
@@ -136,6 +159,8 @@ pub async fn load_initial_config(store: &kv::Store) -> Config {
         "warmup_samples",
         "anti_windup_limit",
         "pid_interval_ms",
+        "max_buffer_duration_ms",
+        "drain_interval_ms",
     ];
 
     for key in keys {
@@ -195,6 +220,18 @@ mod tests {
 
         config.apply_kv_entry("algorithm", "fixed");
         assert_eq!(config.algorithm, Algorithm::Fixed);
+
+        config.apply_kv_entry("algorithm", "buffered_batch");
+        assert_eq!(config.algorithm, Algorithm::BufferedBatch);
+
+        config.apply_kv_entry("algorithm", "buffered_streaming");
+        assert_eq!(config.algorithm, Algorithm::BufferedStreaming);
+
+        config.apply_kv_entry("max_buffer_duration_ms", "3000");
+        assert_eq!(config.max_buffer_duration_ms, 3000);
+
+        config.apply_kv_entry("drain_interval_ms", "50");
+        assert_eq!(config.drain_interval_ms, 50);
 
         config.apply_kv_entry("fallback_threshold", "0.75");
         assert_eq!(config.fallback_threshold, Some(0.75));

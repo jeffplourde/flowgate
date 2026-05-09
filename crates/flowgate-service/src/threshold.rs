@@ -5,6 +5,13 @@ use crate::config::{Algorithm, Config};
 use crate::metrics as m;
 use crate::pid::{PidController, PidParams};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckResult {
+    Emit,
+    Reject,
+    Buffer,
+}
+
 #[derive(Debug)]
 enum State {
     ColdStart,
@@ -31,7 +38,9 @@ impl ThresholdController {
             .unwrap_or((config.min_threshold + config.max_threshold) / 2.0);
 
         let initial_state = match (config.algorithm, config.fallback_threshold) {
-            (Algorithm::Fixed, _) => {
+            (Algorithm::Fixed, _)
+            | (Algorithm::BufferedBatch, _)
+            | (Algorithm::BufferedStreaming, _) => {
                 m::set_controller_state(m::ControllerState::Fixed);
                 State::Fixed
             }
@@ -59,9 +68,11 @@ impl ThresholdController {
         self.threshold
     }
 
-    /// Check if a score passes the current threshold and record the result.
-    /// Returns true if the message should be emitted.
-    pub fn check(&mut self, score: f64) -> bool {
+    pub fn check(&mut self, score: f64) -> CheckResult {
+        if self.config.is_buffered() {
+            return CheckResult::Buffer;
+        }
+
         match &mut self.state {
             State::Warmup { scores } => {
                 scores.push(score);
@@ -86,24 +97,41 @@ impl ThresholdController {
                     );
                 }
 
-                score >= self.threshold
+                if score >= self.threshold {
+                    CheckResult::Emit
+                } else {
+                    CheckResult::Reject
+                }
             }
             State::ColdStart => {
-                // Using fallback threshold, recording emissions for PID warmup
                 let passes = score >= self.threshold;
                 if passes {
                     self.emission_timestamps.push_back(Instant::now());
                 }
-                passes
+                if passes {
+                    CheckResult::Emit
+                } else {
+                    CheckResult::Reject
+                }
             }
             State::Pid | State::Fixed => {
                 let passes = score >= self.threshold;
                 if passes {
                     self.emission_timestamps.push_back(Instant::now());
                 }
-                passes
+                if passes {
+                    CheckResult::Emit
+                } else {
+                    CheckResult::Reject
+                }
             }
         }
+    }
+
+    /// Record that a message was emitted (called by the buffer drainer
+    /// in buffered modes to keep the emission rate tracking accurate).
+    pub fn record_emission(&mut self) {
+        self.emission_timestamps.push_back(Instant::now());
     }
 
     /// Called on the PID tick interval. Updates the threshold based on emission rate.
@@ -161,7 +189,9 @@ impl ThresholdController {
         self.pid.update_params(pid_params_from_config(config));
 
         match (old_algorithm, config.algorithm) {
-            (_, Algorithm::Fixed) => {
+            (_, Algorithm::Fixed)
+            | (_, Algorithm::BufferedBatch)
+            | (_, Algorithm::BufferedStreaming) => {
                 if let Some(t) = config.fallback_threshold {
                     self.threshold = t;
                     m::set_threshold(t);
@@ -169,7 +199,7 @@ impl ThresholdController {
                 self.state = State::Fixed;
                 m::set_controller_state(m::ControllerState::Fixed);
             }
-            (Algorithm::Fixed, Algorithm::Pid) => {
+            (_, Algorithm::Pid) if old_algorithm != Algorithm::Pid => {
                 self.pid.set_output(self.threshold);
                 self.pid.reset();
                 self.state = State::Pid;
@@ -262,7 +292,6 @@ mod tests {
         assert_eq!(controller.state_name(), "warmup");
         assert!(controller.is_buffering());
 
-        // Feed enough scores to complete warmup
         for i in 0..5 {
             controller.check(i as f64 / 5.0);
         }
@@ -280,11 +309,9 @@ mod tests {
         let mut controller = ThresholdController::new(&config);
         assert_eq!(controller.state_name(), "cold_start");
 
-        // Process some messages
-        controller.check(0.8);
-        controller.check(0.3);
+        assert_eq!(controller.check(0.8), CheckResult::Emit);
+        assert_eq!(controller.check(0.3), CheckResult::Reject);
 
-        // After a tick with data, should transition to PID
         controller.tick();
         assert_eq!(controller.state_name(), "pid");
     }
@@ -312,5 +339,22 @@ mod tests {
         pid_config.algorithm = Algorithm::Pid;
         controller.update_config(&pid_config);
         assert_eq!(controller.state_name(), "pid");
+    }
+
+    #[test]
+    fn buffered_mode_returns_buffer() {
+        let config = Config {
+            algorithm: Algorithm::BufferedBatch,
+            fallback_threshold: Some(0.5),
+            ..Config::default()
+        };
+        let mut controller = ThresholdController::new(&config);
+        assert_eq!(controller.check(0.1), CheckResult::Buffer);
+        assert_eq!(controller.check(0.9), CheckResult::Buffer);
+
+        let mut streaming_config = config.clone();
+        streaming_config.algorithm = Algorithm::BufferedStreaming;
+        controller.update_config(&streaming_config);
+        assert_eq!(controller.check(0.5), CheckResult::Buffer);
     }
 }
