@@ -33,8 +33,10 @@ services:
       OUTPUT_SUBJECT: flowgate.out.threshold
       OUTPUT_STREAM: FLOWGATE_OUT_A
       RUST_LOG: flowgate=info
-    ports:
-      - "9090:9090"
+    deploy:
+      replicas: 2
+    expose:
+      - "9090"
 
   flowgate-buffered:
     build:
@@ -49,8 +51,10 @@ services:
       OUTPUT_SUBJECT: flowgate.out.buffered
       OUTPUT_STREAM: FLOWGATE_OUT_B
       RUST_LOG: flowgate=info
-    ports:
-      - "9091:9090"
+    deploy:
+      replicas: 2
+    expose:
+      - "9090"
 
   producer:
     build:
