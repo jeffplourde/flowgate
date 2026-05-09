@@ -68,6 +68,24 @@ The buffered streaming mode holds messages and picks the best. During a burst, t
 
 In the demo, you can observe this by watching the "Avg Score" metric on both panels when a burst hits. The buffered instance's avg score climbs while the threshold instance's stays roughly constant.
 
+### Burst Quality Insight
+
+During bursts, buffered streaming shows notably higher average emitted scores compared to PID mode. This happens because the buffer accumulates a denser pool of candidates when a batch of client data arrives. The drainer continues popping the single best message at its steady interval, so it cherry-picks from a much richer set. The quality advantage is most visible in the dashboard when the multi-client producer fires a wave of batches — the buffered instance's average emitted score spikes upward while the threshold instance's average stays roughly flat (it just raises the threshold reactively, which filters more but doesn't select the best).
+
+## Backpressure-Aware Drain
+
+The buffer drain loop includes two safety mechanisms that prevent it from emitting low-value or harmful traffic:
+
+### Quality Floor (`min_quality_score`)
+Before emitting, the drainer peeks at the best score in the buffer. If it is below `min_quality_score`, the drain is skipped for that interval and `flowgate_drain_skipped_quality_total` is incremented. This prevents emitting predictions that are not worth acting on, even when the buffer is non-empty.
+
+Default: `0.0` (disabled — all scores are acceptable).
+
+### Downstream Backpressure (`backpressure_threshold_ms`)
+After each publish, the drain loop records the round-trip latency as `flowgate_publish_latency_ms`. If the latency exceeds `backpressure_threshold_ms`, the next drain cycle is skipped and `flowgate_drain_skipped_backpressure_total` is incremented. This gives the downstream system time to recover before more messages are pushed.
+
+Default: `500` ms.
+
 ## Component Details
 
 ### ThresholdController (`threshold.rs`)
@@ -117,6 +135,42 @@ The service supports per-instance configuration via environment variables:
 
 This enables the side-by-side demo where two instances process the same input with different algorithms.
 
+## Replica Support
+
+Each flowgate service in docker-compose runs with `deploy.replicas: 2`. Replicas share the same durable consumer name, so JetStream load-balances messages across them. This means:
+
+- Each replica processes a subset of the input stream
+- PID state is per-replica (each replica runs its own PID loop)
+- The effective throughput scales with replica count
+- On restart, the durable consumer ensures no messages are lost
+
+The dashboard handles replicas by resolving the Docker Compose service DNS name (e.g., `flowgate-threshold`) to all replica IPs via `tokio::net::lookup_host`, scraping Prometheus metrics from each, and aggregating: counters are summed, gauges are averaged. This gives a unified view of the service's behavior regardless of replica count.
+
+## Multi-Client Batch Producer
+
+The producer simulates a realistic ML inference pipeline rather than a simple steady-rate message generator:
+
+- **70 simulated clients** (configurable via `num_clients`) each independently generate batches
+- **Time compression**: real-world hourly patterns are compressed by a configurable factor (default 60x, so 1 hour of traffic in 1 minute)
+- **Batch sizes**: each client sends between `min_batch_size` (100) and `max_batch_size` (5000) predictions per batch
+- **Score distribution**: configurable (`beta`, `normal`, `uniform`, `bimodal`) with tunable variance
+
+All producer parameters are stored in the `flowgate-producer-config` KV bucket and can be changed at runtime.
+
+### Producer Metrics
+
+The producer exposes Prometheus metrics on its own port:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `producer_messages_published_total` | counter | Total predictions published |
+| `producer_publish_errors_total` | counter | Failed publish attempts |
+| `producer_batches_sent_total` | counter | Total batches completed |
+| `producer_active_clients` | gauge | Number of active simulated clients |
+| `producer_backpressure` | gauge | 0 or 1 — set to 1 when publishes fail, indicating NATS backpressure |
+
+The dashboard scrapes producer metrics and surfaces them alongside flowgate metrics. When `producer_backpressure` = 1, the dashboard shows a red banner alerting the operator.
+
 ## Dashboard Architecture
 
 ```
@@ -127,8 +181,20 @@ Browser ↔ WebSocket ↔ Dashboard Backend ↔ NATS
 
 The dashboard backend (`flowgate-dashboard`) is an axum server that:
 1. Subscribes to both output JetStream streams, extracts score/threshold/state from headers, pushes events to connected WebSocket clients
-2. Scrapes Prometheus `/metrics` from both flowgate instances every second, parses the text format, pushes metric snapshots to WebSocket clients
-3. Serves a REST API for reading/writing NATS KV config
+2. Scrapes Prometheus `/metrics` from both flowgate instances and the producer every second, resolves Docker DNS to all replica IPs, aggregates metrics (sum counters, avg gauges), and pushes snapshots to WebSocket clients
+3. Serves a REST API for reading/writing NATS KV config (both flowgate and producer KV buckets)
 4. Serves the built React SPA as static files
 
 The browser never talks to NATS directly.
+
+### Metrics Aggregation
+
+When scraping metrics, the dashboard resolves each service hostname (e.g., `flowgate-threshold`) to all container IPs via DNS lookup. It scrapes each IP individually, then aggregates:
+- **Counters** (names containing `_total`): summed across replicas
+- **Gauges** (everything else): averaged across replicas
+
+This ensures the dashboard shows correct totals for counters (e.g., total messages received across all replicas) and representative values for gauges (e.g., average threshold).
+
+### Ingestion Rate
+
+The `flowgate_ingestion_rate` gauge tracks the current inbound message rate (messages/sec) as observed by each flowgate instance. The dashboard displays this metric to give operators visibility into the input load, which is especially useful for understanding PID behavior and buffer fill rates.

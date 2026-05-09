@@ -27,8 +27,11 @@ curl -s http://localhost:3000/ | head -1
 | 3000 | Dashboard UI |
 | 4222 | NATS client |
 | 8222 | NATS monitoring |
-| 9090 | Flowgate A (threshold) metrics |
-| 9091 | Flowgate B (buffered) metrics |
+| 9090 | Flowgate A (threshold) metrics — each replica exposes this port internally |
+| 9091 | Flowgate B (buffered) metrics — each replica exposes this port internally |
+| 9090 | Producer metrics (separate container) |
+
+Note: With replicas, ports 9090/9091 are per-container. The dashboard resolves all replica IPs via DNS and scrapes each one individually.
 
 ## Emergency: Switch to Fixed Threshold
 
@@ -60,6 +63,20 @@ nats kv put flowgate-config-a algorithm pid
 | `flowgate_pid_error` | Oscillating near 0 | If growing, PID isn't converging |
 | `flowgate_buffer_size` | < input_rate × buffer_duration | If growing unbounded, drain can't keep up |
 | `flowgate_buffer_evicted_total` | Increasing steadily | Normal in buffered mode — messages age out |
+| `flowgate_ingestion_rate` | Matches expected input rate | If zero, producer may be down or NATS is unhealthy |
+| `flowgate_drain_skipped_quality_total` | Low or zero | If high, `min_quality_score` is too aggressive for the input distribution |
+| `flowgate_drain_skipped_backpressure_total` | Low or zero | If high, downstream is slow — investigate downstream or raise `backpressure_threshold_ms` |
+| `flowgate_publish_latency_ms` | < 100ms | If consistently high, downstream or NATS is under pressure |
+
+### Producer Metrics to Watch
+
+| Metric | Healthy Range | Action if Out of Range |
+|--------|--------------|----------------------|
+| `producer_messages_published_total` | Increasing steadily | If flat, producer may be stuck or backpressured |
+| `producer_publish_errors_total` | Zero or near-zero | If rising, NATS is rejecting publishes — check stream limits |
+| `producer_batches_sent_total` | Increasing | If flat, check producer logs |
+| `producer_active_clients` | Matches `num_clients` config | Should equal configured value |
+| `producer_backpressure` | 0 | If 1, NATS is rejecting publishes — dashboard shows red banner |
 
 ### Understanding Controller State
 | Value | State | Meaning |
@@ -86,11 +103,86 @@ Cold start behavior depends on `fallback_threshold`:
 ### Single Instance
 Handles 100-10K msg/s comfortably. The bottleneck is the `Arc<Mutex<ThresholdController>>` — each message acquires the lock briefly.
 
-### Horizontal Scaling
-Not yet implemented. Would require:
+### Replica Support (Current)
+
+Each flowgate service in docker-compose runs with `deploy.replicas: 2`. Replicas share the same durable consumer name, so JetStream load-balances messages across them.
+
+**Managing replicas:**
+```bash
+# Scale up
+docker compose up -d --scale flowgate-threshold=4
+
+# Scale down
+docker compose up -d --scale flowgate-threshold=1
+
+# Check replica count
+docker compose ps flowgate-threshold
+```
+
+**Important considerations:**
+- Each replica runs its own PID controller independently. Doubling replicas means each sees half the input rate, so the effective `target_rate` should be divided by replica count (or configure each replica's target rate accordingly).
+- The dashboard automatically discovers all replica IPs via DNS and aggregates their metrics. No dashboard reconfiguration is needed when scaling.
+- On scale-down, the durable consumer ensures messages are rebalanced to surviving replicas with no data loss.
+
+### Horizontal Scaling (Future)
+For true horizontal scaling beyond replicas, would require:
 - Partitioned JetStream consumers (one per partition)
 - Shared rate measurement (or per-partition rate targets)
-- This is tracked as a future enhancement
+
+## Handling Backpressure
+
+### Dashboard Shows Red Backpressure Banner
+The producer reports `producer_backpressure=1` when NATS publishes fail. This triggers a red banner in the dashboard.
+
+**Immediate actions:**
+1. Check NATS health: `nats server check connection`
+2. Check stream storage: `nats stream info FLOWGATE_IN` — if storage is at max (10GB), old messages are being dropped
+3. Reduce producer load: `nats kv put flowgate-producer-config num_clients 20`
+4. Check consumer lag: `nats consumer info FLOWGATE_IN <consumer-name>` — high pending count means flowgate isn't keeping up
+
+### Drain Skipping Due to Backpressure
+If `flowgate_drain_skipped_backpressure_total` is rising:
+1. Check `flowgate_publish_latency_ms` — what is the actual downstream latency?
+2. If downstream is genuinely slow, this is working as intended — flowgate is protecting the downstream system
+3. If latency is just above threshold, raise it: `nats kv put flowgate-config-b backpressure_threshold_ms 1000`
+4. If downstream is healthy but NATS is slow, investigate NATS performance
+
+### Drain Skipping Due to Quality Floor
+If `flowgate_drain_skipped_quality_total` is rising:
+1. The input distribution may have shifted — scores are lower than expected
+2. Lower the quality floor: `nats kv put flowgate-config-b min_quality_score 0.3`
+3. Or set to 0 to disable: `nats kv put flowgate-config-b min_quality_score 0.0`
+
+## Producer Monitoring
+
+### Checking Producer Health
+```bash
+# Producer metrics
+curl -s http://producer:9090/metrics | grep producer_
+
+# Producer config
+nats kv ls flowgate-producer-config
+
+# Adjust producer load
+nats kv put flowgate-producer-config num_clients 30
+nats kv put flowgate-producer-config time_compression 120  # faster compression = more load
+```
+
+### Changing Producer Behavior at Runtime
+All producer parameters are live-tunable via the `flowgate-producer-config` KV bucket:
+
+```bash
+# Reduce client count to ease load
+nats kv put flowgate-producer-config num_clients 20
+
+# Increase batch sizes for burst testing
+nats kv put flowgate-producer-config min_batch_size 1000
+nats kv put flowgate-producer-config max_batch_size 10000
+
+# Switch score distribution
+nats kv put flowgate-producer-config distribution bimodal
+nats kv put flowgate-producer-config distribution_variance 0.5
+```
 
 ## Troubleshooting
 

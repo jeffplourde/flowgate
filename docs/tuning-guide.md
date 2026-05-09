@@ -106,6 +106,52 @@ How often the drainer pops the best message.
 ### Buffer Memory
 Each buffered message holds the full payload bytes plus headers. At 500 msg/s with 5s buffer duration, you'll have ~2500 messages in the buffer. Size depends on payload size.
 
+## Quality Floor Tuning (`min_quality_score`)
+
+The `min_quality_score` parameter sets a minimum score below which the drain loop will skip emission even if the buffer is non-empty. This prevents low-quality predictions from being sent downstream during quiet periods when the buffer has few candidates.
+
+| Setting | Effect |
+|---------|--------|
+| `0.0` (default) | Disabled — any score is acceptable |
+| `0.3 - 0.5` | Light filtering — only reject clearly poor predictions |
+| `0.7+` | Aggressive — only emit high-confidence predictions |
+
+**When to use**: Set this when your downstream system wastes significant resources on low-quality predictions. Monitor `flowgate_drain_skipped_quality_total` to see how often the floor triggers. If it fires constantly, the floor is too high for your input distribution.
+
+```bash
+nats kv put flowgate-config-b min_quality_score 0.5
+```
+
+## Backpressure Tuning (`backpressure_threshold_ms`)
+
+The `backpressure_threshold_ms` parameter controls when the drain loop pauses due to downstream pressure. After each publish, the service records the round-trip latency. If it exceeds this threshold, the next drain cycle is skipped.
+
+| Setting | Effect |
+|---------|--------|
+| `500` (default) | Moderate sensitivity — pauses when publish takes > 500ms |
+| `100 - 200` | Aggressive — reacts quickly to any downstream slowdown |
+| `1000+` | Permissive — only pauses on severe downstream issues |
+
+**When to use**: Set this lower if your downstream system is latency-sensitive and benefits from load shedding. Set it higher if downstream latency is naturally variable and you don't want false pauses.
+
+Monitor `flowgate_drain_skipped_backpressure_total` to see how often backpressure triggers. Monitor `flowgate_publish_latency_ms` to see actual downstream latency.
+
+```bash
+nats kv put flowgate-config-b backpressure_threshold_ms 200
+```
+
+## Burst Quality Insight
+
+During bursts (e.g., when the multi-client producer fires a wave of batches), buffered streaming shows notably higher average emitted scores compared to PID mode. This happens because:
+
+1. The buffer accumulates a denser pool of candidates during the burst
+2. The drainer continues popping the single best at its steady interval
+3. It cherry-picks from a much richer candidate set
+
+This effect is most visible in the dashboard when watching the "Avg Score" metric on both panels. The buffered instance's average emitted score spikes upward during bursts while the threshold instance's average stays roughly flat. The PID instance raises its threshold reactively, which filters more messages but doesn't actively select the best.
+
+This is the primary reason to choose `buffered_streaming` over `pid` mode — if your pipeline benefits from higher-quality predictions at the cost of latency, the quality improvement during bursts can be significant.
+
 ## Measurement Window
 
 The `measurement_window_secs` parameter controls the sliding window for computing actual emission rate.

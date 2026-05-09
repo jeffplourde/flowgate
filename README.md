@@ -1,6 +1,6 @@
 # Flowgate
 
-Adaptive threshold rate controller for ML prediction pipelines. Sits between a prediction source and a downstream action system, dynamically tuning its score threshold via a PID controller to emit a predictable, controllable number of predictions per unit time.
+Adaptive threshold rate controller for ML prediction pipelines. Sits between a prediction source and a downstream action system, dynamically tuning its score threshold via one of four algorithms — PID, fixed, buffered batch, or buffered streaming — to emit a predictable, controllable number of predictions per unit time.
 
 ```
 [ML Producer] → NATS JetStream (flowgate.in) → [Flowgate] → NATS JetStream (flowgate.out) → [Downstream]
@@ -8,14 +8,21 @@ Adaptive threshold rate controller for ML prediction pipelines. Sits between a p
                                               NATS KV (flowgate-config)
 ```
 
+The project includes a multi-client batch producer, a React dashboard for side-by-side algorithm comparison, and replica support for horizontal scaling.
+
 ## Key Features
 
 - **PID-controlled threshold** — automatically adjusts based on actual vs target emission rate
+- **Buffered admission** — `buffered_batch` (windowed best-of-N) and `buffered_streaming` (priority-queue drain) modes trade latency for higher output quality
 - **Opaque payload passthrough** — only reads the `score` field; payload is never parsed
 - **Live-tunable config** — all parameters stored in NATS KV, changes take effect within one PID tick
 - **Hybrid cold start** — uses fallback threshold if configured, otherwise runs a percentile warmup
 - **Instant fallback** — set `algorithm=fixed` in KV to immediately switch to a static threshold
-- **Full observability** — Prometheus metrics for threshold, rate, PID terms, and controller state
+- **Backpressure-aware drain** — `min_quality_score` quality floor and `backpressure_threshold_ms` for downstream pressure detection
+- **Multi-client batch producer** — 70 simulated clients sending batches at compressed time intervals, configurable via NATS KV
+- **React dashboard** — side-by-side comparison of two flowgate instances with live metrics, WebSocket backend, REST API for config
+- **Replica support** — `deploy.replicas: 2` in docker-compose with shared durable consumers and metrics aggregation across replicas
+- **Full observability** — Prometheus metrics for threshold, rate, PID terms, controller state, ingestion rate, backpressure, and producer health
 
 ## Message Format
 
@@ -44,10 +51,12 @@ docker compose up --build
 ```
 
 This starts:
-- **NATS** with JetStream enabled
-- **nats-setup** — creates streams, KV bucket, seeds default config
-- **flowgate** — the adaptive threshold service (metrics on `:9090`)
-- **producer** — generates synthetic predictions at 500/s with bursts
+- **NATS** with JetStream enabled (10GB max storage, 10m stream max-age)
+- **nats-setup** — creates streams, KV buckets, seeds default config
+- **flowgate-threshold** (x2 replicas) — PID mode instance (metrics on `:9090`)
+- **flowgate-buffered** (x2 replicas) — buffered_streaming mode instance (metrics on `:9091`)
+- **producer** — multi-client batch producer (70 simulated clients, metrics on `:9090`)
+- **dashboard** — React UI at http://localhost:3000
 
 To include Prometheus:
 ```bash
@@ -89,10 +98,14 @@ nats kv ls flowgate-config
 | `fallback_threshold` | float | none | Fixed threshold for cold start and fallback |
 | `min_threshold` | float | 0.0 | Lower bound for threshold |
 | `max_threshold` | float | 1.0 | Upper bound for threshold |
-| `algorithm` | string | pid | `pid` or `fixed` |
+| `algorithm` | string | pid | `pid`, `fixed`, `buffered_batch`, or `buffered_streaming` |
 | `warmup_samples` | int | 100 | Samples needed for percentile warmup |
 | `anti_windup_limit` | float | 100.0 | PID integral term clamp |
 | `pid_interval_ms` | int | 1000 | PID tick interval in milliseconds |
+| `max_buffer_duration_ms` | int | 5000 | Max time a message can sit in the buffer before eviction |
+| `drain_interval_ms` | int | 100 | How often the buffer drainer pops the best message (streaming mode) |
+| `min_quality_score` | float | 0.0 | Quality floor — drain skips if best buffered score is below this |
+| `backpressure_threshold_ms` | int | 500 | Publish latency above which drain pauses to relieve downstream pressure |
 
 ## How the PID Controller Works
 
@@ -114,6 +127,8 @@ When error is positive (under-emitting), the threshold is lowered to allow more 
 
 Prometheus metrics are exposed on `:9090/metrics`:
 
+### Flowgate Service Metrics
+
 | Metric | Type |
 |--------|------|
 | `flowgate_messages_received_total` | counter |
@@ -127,18 +142,37 @@ Prometheus metrics are exposed on `:9090/metrics`:
 | `flowgate_pid_i_term` | gauge |
 | `flowgate_pid_d_term` | gauge |
 | `flowgate_controller_state` | gauge (0=cold_start, 1=warmup, 2=pid, 3=fixed) |
+| `flowgate_ingestion_rate` | gauge — current inbound message rate |
+| `flowgate_drain_skipped_quality_total` | counter — drains skipped due to `min_quality_score` floor |
+| `flowgate_drain_skipped_backpressure_total` | counter — drains skipped due to downstream backpressure |
+| `flowgate_publish_latency_ms` | gauge — last publish round-trip time |
+
+### Producer Metrics
+
+| Metric | Type |
+|--------|------|
+| `producer_messages_published_total` | counter |
+| `producer_publish_errors_total` | counter |
+| `producer_batches_sent_total` | counter |
+| `producer_active_clients` | gauge |
+| `producer_backpressure` | gauge (0 or 1) |
 
 ## Producer
 
-The included producer generates synthetic predictions with configurable distributions:
+The producer simulates a realistic ML inference pipeline: 70 clients sending prediction batches at compressed time intervals. Each client generates a batch of 100-5000 predictions with scores drawn from a configurable distribution, then publishes them to NATS JetStream. All parameters are live-tunable via the `flowgate-producer-config` KV bucket.
 
-| Env Var | Default | Description |
-|---------|---------|-------------|
-| `DISTRIBUTION` | beta | `normal`, `beta`, `uniform`, `bimodal` |
-| `RATE` | 100 | Base messages per second |
-| `BURST_INTERVAL` | 0 | Seconds between bursts (0 = no bursts) |
-| `BURST_MULTIPLIER` | 5 | Rate multiplier during burst |
-| `BURST_DURATION` | 2 | Burst length in seconds |
+### Producer Config (KV bucket: `flowgate-producer-config`)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `num_clients` | 70 | Number of simulated clients sending batches |
+| `time_compression` | 60 | Time compression factor (60 = 1 hour of real traffic in 1 minute) |
+| `min_batch_size` | 100 | Minimum predictions per batch |
+| `max_batch_size` | 5000 | Maximum predictions per batch |
+| `distribution` | beta | Score distribution: `normal`, `beta`, `uniform`, `bimodal` |
+| `distribution_variance` | 0.3 | Controls spread of the score distribution |
+
+The producer exposes Prometheus metrics on its own `:9090` endpoint and reports backpressure status (surfaced in the dashboard with a red banner when `producer_backpressure` = 1).
 
 ## Development
 
