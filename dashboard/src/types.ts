@@ -20,6 +20,7 @@ export interface TimeSeriesPoint {
 }
 
 export interface InstanceState {
+  ingestionRate: TimeSeriesPoint[];
   emissionRate: TimeSeriesPoint[];
   threshold: TimeSeriesPoint[];
   bufferSize: TimeSeriesPoint[];
@@ -40,6 +41,7 @@ export interface InstanceState {
 }
 
 export const EMPTY_INSTANCE: InstanceState = {
+  ingestionRate: [],
   emissionRate: [],
   threshold: [],
   bufferSize: [],

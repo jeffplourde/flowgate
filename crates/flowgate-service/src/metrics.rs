@@ -47,6 +47,10 @@ pub fn register() {
         "flowgate_avg_latency_ms",
         "EMA of time from message arrival to emission"
     );
+    describe_gauge!(
+        "flowgate_ingestion_rate",
+        "Measured ingestion rate (messages per second)"
+    );
 }
 
 pub fn record_received() {
@@ -101,6 +105,10 @@ pub fn set_warmup_samples(n: u64) {
 
 pub fn set_buffer_size(n: usize) {
     gauge!("flowgate_buffer_size").set(n as f64);
+}
+
+pub fn set_ingestion_rate(v: f64) {
+    gauge!("flowgate_ingestion_rate").set(v);
 }
 
 pub fn record_evicted(n: usize) {

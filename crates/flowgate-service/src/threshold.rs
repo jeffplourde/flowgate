@@ -26,6 +26,7 @@ pub struct ThresholdController {
     pid: PidController,
     threshold: f64,
     emission_timestamps: VecDeque<Instant>,
+    ingestion_timestamps: VecDeque<Instant>,
     last_tick: Instant,
     config: Config,
 }
@@ -59,6 +60,7 @@ impl ThresholdController {
             pid: PidController::new(pid_params, initial_threshold),
             threshold: initial_threshold,
             emission_timestamps: VecDeque::new(),
+            ingestion_timestamps: VecDeque::new(),
             last_tick: Instant::now(),
             config: config.clone(),
         }
@@ -69,6 +71,8 @@ impl ThresholdController {
     }
 
     pub fn check(&mut self, score: f64) -> CheckResult {
+        self.ingestion_timestamps.push_back(Instant::now());
+
         if self.config.is_buffered() {
             return CheckResult::Buffer;
         }
@@ -140,9 +144,9 @@ impl ThresholdController {
         let dt = now.duration_since(self.last_tick).as_secs_f64();
         self.last_tick = now;
 
-        // Prune old emission timestamps outside the measurement window
         let window_start =
             now - std::time::Duration::from_secs_f64(self.config.measurement_window_secs);
+
         while self
             .emission_timestamps
             .front()
@@ -150,10 +154,20 @@ impl ThresholdController {
         {
             self.emission_timestamps.pop_front();
         }
+        while self
+            .ingestion_timestamps
+            .front()
+            .is_some_and(|t| *t < window_start)
+        {
+            self.ingestion_timestamps.pop_front();
+        }
 
         let actual_rate =
             self.emission_timestamps.len() as f64 / self.config.measurement_window_secs;
+        let ingestion_rate =
+            self.ingestion_timestamps.len() as f64 / self.config.measurement_window_secs;
         m::set_actual_rate(actual_rate);
+        m::set_ingestion_rate(ingestion_rate);
         m::set_target_rate(self.config.target_rate);
 
         match &self.state {

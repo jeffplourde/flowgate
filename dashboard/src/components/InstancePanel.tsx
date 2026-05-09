@@ -56,6 +56,12 @@ export function InstancePanel({ title, state, color }: Props) {
       </div>
 
       <TimeSeriesChart
+        title="Ingestion Rate"
+        data={state.ingestionRate}
+        color="#95a5a6"
+      />
+
+      <TimeSeriesChart
         title="Emission Rate"
         data={state.emissionRate}
         color={color}

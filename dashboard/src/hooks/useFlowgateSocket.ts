@@ -66,6 +66,10 @@ export function useFlowgateSocket() {
         const d = event.data;
         setter((prev) => ({
           ...prev,
+          ingestionRate: pushPoint(
+            prev.ingestionRate,
+            d.flowgate_ingestion_rate ?? 0
+          ),
           emissionRate: pushPoint(
             prev.emissionRate,
             d.flowgate_actual_rate ?? 0
