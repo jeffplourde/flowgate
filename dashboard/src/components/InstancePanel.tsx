@@ -70,6 +70,8 @@ export function InstancePanel({ title, state, color }: Props) {
         domain={[0, 1]}
       />
 
+      <ScoreHistogram scores={state.scoreHistory} color={color} />
+
       {state.bufferSize.length > 0 &&
         state.bufferSize.some((p) => p.value > 0) && (
           <TimeSeriesChart
@@ -78,8 +80,6 @@ export function InstancePanel({ title, state, color }: Props) {
             color="#9b59b6"
           />
         )}
-
-      <ScoreHistogram scores={state.scoreHistory} color={color} />
 
       <div
         style={{
