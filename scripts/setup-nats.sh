@@ -4,9 +4,10 @@ set -e
 NATS_URL="${NATS_URL:-nats://nats:4222}"
 
 echo "Waiting for NATS to be ready..."
-until nats server ping --server="$NATS_URL" 2>/dev/null; do
+until nats pub --server="$NATS_URL" flowgate.healthcheck "ready" 2>/dev/null; do
     sleep 0.5
 done
+echo "NATS is ready"
 
 echo "Creating streams..."
 
@@ -18,13 +19,6 @@ nats stream add FLOWGATE_IN \
     --storage=file \
     --replicas=1 \
     --discard=old \
-    --max-msgs=-1 \
-    --max-bytes=-1 \
-    --max-msg-size=-1 \
-    --dupe-window=2m \
-    --no-allow-rollup \
-    --deny-delete \
-    --deny-purge \
     --defaults 2>/dev/null || echo "FLOWGATE_IN already exists"
 
 nats stream add FLOWGATE_OUT \
@@ -35,13 +29,6 @@ nats stream add FLOWGATE_OUT \
     --storage=file \
     --replicas=1 \
     --discard=old \
-    --max-msgs=-1 \
-    --max-bytes=-1 \
-    --max-msg-size=-1 \
-    --dupe-window=2m \
-    --no-allow-rollup \
-    --deny-delete \
-    --deny-purge \
     --defaults 2>/dev/null || echo "FLOWGATE_OUT already exists"
 
 echo "Creating KV bucket..."
@@ -52,9 +39,9 @@ nats kv add flowgate-config \
 echo "Seeding default config..."
 nats kv put flowgate-config target_rate "10" --server="$NATS_URL" 2>/dev/null || true
 nats kv put flowgate-config measurement_window_secs "10" --server="$NATS_URL" 2>/dev/null || true
-nats kv put flowgate-config kp "0.01" --server="$NATS_URL" 2>/dev/null || true
-nats kv put flowgate-config ki "0.001" --server="$NATS_URL" 2>/dev/null || true
-nats kv put flowgate-config kd "0.0005" --server="$NATS_URL" 2>/dev/null || true
+nats kv put flowgate-config kp "0.0004" --server="$NATS_URL" 2>/dev/null || true
+nats kv put flowgate-config ki "0.00004" --server="$NATS_URL" 2>/dev/null || true
+nats kv put flowgate-config kd "0.00001" --server="$NATS_URL" 2>/dev/null || true
 nats kv put flowgate-config fallback_threshold "0.5" --server="$NATS_URL" 2>/dev/null || true
 nats kv put flowgate-config min_threshold "0" --server="$NATS_URL" 2>/dev/null || true
 nats kv put flowgate-config max_threshold "1" --server="$NATS_URL" 2>/dev/null || true

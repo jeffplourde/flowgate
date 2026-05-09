@@ -83,9 +83,9 @@ nats kv ls flowgate-config
 |-----|------|---------|-------------|
 | `target_rate` | float | 10.0 | Target emissions per second |
 | `measurement_window_secs` | float | 10.0 | Window for measuring actual rate |
-| `kp` | float | 0.01 | PID proportional gain |
-| `ki` | float | 0.001 | PID integral gain |
-| `kd` | float | 0.0005 | PID derivative gain |
+| `kp` | float | 0.0004 | PID proportional gain |
+| `ki` | float | 0.00004 | PID integral gain |
+| `kd` | float | 0.00001 | PID derivative gain |
 | `fallback_threshold` | float | none | Fixed threshold for cold start and fallback |
 | `min_threshold` | float | 0.0 | Lower bound for threshold |
 | `max_threshold` | float | 1.0 | Upper bound for threshold |

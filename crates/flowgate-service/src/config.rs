@@ -34,9 +34,9 @@ impl Default for Config {
         Self {
             target_rate: 10.0,
             measurement_window_secs: 10.0,
-            kp: 0.01,
-            ki: 0.001,
-            kd: 0.0005,
+            kp: 0.0004,
+            ki: 0.00004,
+            kd: 0.00001,
             fallback_threshold: None,
             min_threshold: 0.0,
             max_threshold: 1.0,
