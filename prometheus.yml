@@ -2,6 +2,10 @@ global:
   scrape_interval: 5s
 
 scrape_configs:
-  - job_name: flowgate
+  - job_name: flowgate-threshold
     static_configs:
-      - targets: ["flowgate:9090"]
+      - targets: ["flowgate-threshold:9090"]
+
+  - job_name: flowgate-buffered
+    static_configs:
+      - targets: ["flowgate-buffered:9090"]

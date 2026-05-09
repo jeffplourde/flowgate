@@ -7,3 +7,5 @@ k8s/
 LICENSE
 .gitignore
 .dockerignore
+dashboard/node_modules/
+dashboard/dist/

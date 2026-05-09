@@ -108,10 +108,7 @@ async fn put_config(
         }
     };
 
-    match store
-        .put(&key, Bytes::from(body.value.clone()))
-        .await
-    {
+    match store.put(&key, Bytes::from(body.value.clone())).await {
         Ok(_) => {
             info!(instance, key, value = %body.value, "config updated via API");
             (StatusCode::OK, "ok").into_response()

@@ -20,7 +20,7 @@ services:
       NATS_URL: nats://nats:4222
     restart: "no"
 
-  flowgate:
+  flowgate-threshold:
     build:
       context: .
       target: flowgate-service
@@ -29,9 +29,28 @@ services:
         condition: service_completed_successfully
     environment:
       NATS_URL: nats://nats:4222
+      NATS_KV_BUCKET: flowgate-config-a
+      OUTPUT_SUBJECT: flowgate.out.threshold
+      OUTPUT_STREAM: FLOWGATE_OUT_A
       RUST_LOG: flowgate=info
     ports:
       - "9090:9090"
+
+  flowgate-buffered:
+    build:
+      context: .
+      target: flowgate-service
+    depends_on:
+      nats-setup:
+        condition: service_completed_successfully
+    environment:
+      NATS_URL: nats://nats:4222
+      NATS_KV_BUCKET: flowgate-config-b
+      OUTPUT_SUBJECT: flowgate.out.buffered
+      OUTPUT_STREAM: FLOWGATE_OUT_B
+      RUST_LOG: flowgate=info
+    ports:
+      - "9091:9090"
 
   producer:
     build:
@@ -49,10 +68,26 @@ services:
       BURST_DURATION: "2"
       RUST_LOG: flowgate_producer=info
 
+  dashboard:
+    build:
+      context: .
+      target: flowgate-dashboard
+    depends_on:
+      nats-setup:
+        condition: service_completed_successfully
+    environment:
+      NATS_URL: nats://nats:4222
+      FLOWGATE_A_METRICS: http://flowgate-threshold:9090
+      FLOWGATE_B_METRICS: http://flowgate-buffered:9090
+      KV_BUCKET_A: flowgate-config-a
+      KV_BUCKET_B: flowgate-config-b
+    ports:
+      - "3000:3000"
+
   prometheus:
     image: prom/prometheus
     ports:
-      - "9091:9090"
+      - "9092:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
     profiles:
