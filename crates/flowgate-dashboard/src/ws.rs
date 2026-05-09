@@ -131,35 +131,108 @@ pub async fn subscribe_output_stream(
     Ok(())
 }
 
+const COUNTER_METRICS: &[&str] = &[
+    "flowgate_messages_received_total",
+    "flowgate_messages_emitted_total",
+    "flowgate_messages_rejected_total",
+    "flowgate_buffer_evicted_total",
+];
+
 pub async fn scrape_metrics_loop(
     metrics_a: String,
     metrics_b: String,
     tx: broadcast::Sender<Event>,
 ) {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap_or_default();
     let mut interval = tokio::time::interval(Duration::from_secs(1));
 
     loop {
         interval.tick().await;
 
-        for (instance, url) in [("a", &metrics_a), ("b", &metrics_b)] {
-            let metrics_url = format!("{url}/metrics");
-            match client.get(&metrics_url).send().await {
-                Ok(resp) => {
-                    if let Ok(body) = resp.text().await {
-                        let data = parse_prometheus_metrics(&body);
-                        let _ = tx.send(Event::Metrics {
-                            instance: instance.to_string(),
-                            data,
-                        });
-                    }
+        for (instance, base_url) in [("a", &metrics_a), ("b", &metrics_b)] {
+            let data = scrape_and_aggregate(&client, base_url).await;
+            if !data.is_empty() {
+                let _ = tx.send(Event::Metrics {
+                    instance: instance.to_string(),
+                    data,
+                });
+            }
+        }
+    }
+}
+
+async fn scrape_and_aggregate(
+    client: &reqwest::Client,
+    base_url: &str,
+) -> std::collections::HashMap<String, f64> {
+    let host_port = base_url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+
+    let addrs: Vec<_> = match tokio::net::lookup_host(host_port).await {
+        Ok(addrs) => addrs.collect(),
+        Err(_) => {
+            if let Ok(resp) = client.get(format!("{base_url}/metrics")).send().await {
+                if let Ok(body) = resp.text().await {
+                    return parse_prometheus_metrics(&body);
                 }
-                Err(e) => {
-                    warn!(instance, error = %e, "failed to scrape metrics");
+            }
+            return std::collections::HashMap::new();
+        }
+    };
+
+    let mut all_results = Vec::new();
+    for addr in &addrs {
+        let url = format!("http://{addr}/metrics");
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(body) = resp.text().await {
+                all_results.push(parse_prometheus_metrics(&body));
+            }
+        }
+    }
+
+    if all_results.is_empty() {
+        return std::collections::HashMap::new();
+    }
+    if all_results.len() == 1 {
+        return all_results.into_iter().next().unwrap();
+    }
+
+    aggregate_metrics(all_results)
+}
+
+fn aggregate_metrics(
+    results: Vec<std::collections::HashMap<String, f64>>,
+) -> std::collections::HashMap<String, f64> {
+    let mut aggregated = std::collections::HashMap::new();
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for result in &results {
+        for (key, value) in result {
+            let entry = aggregated.entry(key.clone()).or_insert(0.0);
+            if COUNTER_METRICS.contains(&key.as_str()) {
+                *entry += value;
+            } else {
+                *entry += value;
+                *counts.entry(key.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+
+    for (key, value) in &mut aggregated {
+        if !COUNTER_METRICS.contains(&key.as_str()) {
+            if let Some(&count) = counts.get(key) {
+                if count > 1 {
+                    *value /= count as f64;
                 }
             }
         }
     }
+
+    aggregated
 }
 
 fn parse_prometheus_metrics(body: &str) -> std::collections::HashMap<String, f64> {

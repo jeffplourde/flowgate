@@ -168,7 +168,7 @@ async fn emit_message(
     score: f64,
     payload: &[u8],
     original_headers: Option<async_nats::HeaderMap>,
-) {
+) -> Duration {
     m::record_emitted();
     update_score_ema(score);
 
@@ -181,6 +181,7 @@ async fn emit_message(
     headers.insert(STATE_HEADER, ctrl.state_name());
     drop(ctrl);
 
+    let start = std::time::Instant::now();
     if let Err(e) = js
         .publish_with_headers(
             pipeline_config.output_subject.clone(),
@@ -191,6 +192,9 @@ async fn emit_message(
     {
         error!(error = %e, "failed to publish to output stream");
     }
+    let elapsed = start.elapsed();
+    publish_latency::update(elapsed.as_millis() as f64);
+    elapsed
 }
 
 fn update_score_ema(score: f64) {
@@ -223,6 +227,27 @@ fn update_latency_ema(latency_ms: f64) {
     m::set_avg_latency_ms(new);
 }
 
+mod publish_latency {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static EMA: AtomicU64 = AtomicU64::new(0);
+    const ALPHA: f64 = 0.05;
+
+    pub fn update(latency_ms: f64) {
+        let current = f64::from_bits(EMA.load(Ordering::Relaxed));
+        let new = if current == 0.0 {
+            latency_ms
+        } else {
+            ALPHA * latency_ms + (1.0 - ALPHA) * current
+        };
+        EMA.store(new.to_bits(), Ordering::Relaxed);
+        super::m::set_publish_latency(new);
+    }
+
+    pub fn get() -> f64 {
+        f64::from_bits(EMA.load(Ordering::Relaxed))
+    }
+}
+
 pub async fn run_buffer_drainer(
     js: jetstream::Context,
     controller: Arc<Mutex<ThresholdController>>,
@@ -240,11 +265,32 @@ pub async fn run_buffer_drainer(
     loop {
         tokio::select! {
             _ = interval.tick(), if current_algorithm == Algorithm::BufferedStreaming => {
+                let config = config_rx.borrow().clone();
+
+                // Backpressure check: skip if downstream is slow
+                let pub_latency = publish_latency::get();
+                if pub_latency > config.backpressure_threshold_ms as f64 {
+                    m::record_drain_skipped_backpressure();
+                    continue;
+                }
+
                 let mut buf = buffer.lock().await;
                 let evicted = buf.evict_expired(Instant::now());
                 if evicted > 0 {
                     m::record_evicted(evicted);
                 }
+
+                // Quality floor: skip if best available score is too low
+                if config.min_quality_score > 0.0 {
+                    if let Some(best) = buf.best_score() {
+                        if best < config.min_quality_score {
+                            m::set_buffer_size(buf.len());
+                            m::record_drain_skipped_quality();
+                            continue;
+                        }
+                    }
+                }
+
                 if let Some(msg) = buf.drain_one() {
                     let latency = msg.arrived.elapsed().as_millis() as f64;
                     m::set_buffer_size(buf.len());

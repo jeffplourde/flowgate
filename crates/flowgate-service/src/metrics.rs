@@ -51,6 +51,18 @@ pub fn register() {
         "flowgate_ingestion_rate",
         "Measured ingestion rate (messages per second)"
     );
+    describe_counter!(
+        "flowgate_drain_skipped_quality_total",
+        "Drain ticks skipped because best score was below quality floor"
+    );
+    describe_counter!(
+        "flowgate_drain_skipped_backpressure_total",
+        "Drain ticks skipped due to downstream backpressure"
+    );
+    describe_gauge!(
+        "flowgate_publish_latency_ms",
+        "EMA of JetStream publish latency"
+    );
 }
 
 pub fn record_received() {
@@ -109,6 +121,18 @@ pub fn set_buffer_size(n: usize) {
 
 pub fn set_ingestion_rate(v: f64) {
     gauge!("flowgate_ingestion_rate").set(v);
+}
+
+pub fn record_drain_skipped_quality() {
+    counter!("flowgate_drain_skipped_quality_total").increment(1);
+}
+
+pub fn record_drain_skipped_backpressure() {
+    counter!("flowgate_drain_skipped_backpressure_total").increment(1);
+}
+
+pub fn set_publish_latency(v: f64) {
+    gauge!("flowgate_publish_latency_ms").set(v);
 }
 
 pub fn record_evicted(n: usize) {

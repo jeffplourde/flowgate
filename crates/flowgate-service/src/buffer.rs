@@ -59,6 +59,10 @@ impl MessageBuffer {
         self.max_duration = Duration::from_millis(ms);
     }
 
+    pub fn best_score(&self) -> Option<f64> {
+        self.heap.peek().map(|m| m.score)
+    }
+
     /// Pop the single highest-scoring message. Returns None if buffer is empty.
     pub fn drain_one(&mut self) -> Option<BufferedMessage> {
         self.heap.pop()

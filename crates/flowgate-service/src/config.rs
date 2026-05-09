@@ -20,6 +20,8 @@ pub struct Config {
     pub pid_interval_ms: u64,
     pub max_buffer_duration_ms: u64,
     pub drain_interval_ms: u64,
+    pub min_quality_score: f64,
+    pub backpressure_threshold_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +50,8 @@ impl Default for Config {
             pid_interval_ms: 1000,
             max_buffer_duration_ms: 5000,
             drain_interval_ms: 100,
+            min_quality_score: 0.0,
+            backpressure_threshold_ms: 500,
         }
     }
 }
@@ -136,6 +140,16 @@ impl Config {
                     self.drain_interval_ms = v;
                 }
             }
+            "min_quality_score" => {
+                if let Ok(v) = value.parse() {
+                    self.min_quality_score = v;
+                }
+            }
+            "backpressure_threshold_ms" => {
+                if let Ok(v) = value.parse() {
+                    self.backpressure_threshold_ms = v;
+                }
+            }
             _ => {
                 warn!(key, "unknown config key");
             }
@@ -161,6 +175,8 @@ pub async fn load_initial_config(store: &kv::Store) -> Config {
         "pid_interval_ms",
         "max_buffer_duration_ms",
         "drain_interval_ms",
+        "min_quality_score",
+        "backpressure_threshold_ms",
     ];
 
     for key in keys {
