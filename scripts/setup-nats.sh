@@ -15,7 +15,7 @@ nats stream add FLOWGATE_IN \
     --server="$NATS_URL" \
     --subjects="flowgate.in.>" \
     --retention=limits \
-    --max-age=1h \
+    --max-age=10m \
     --storage=file \
     --replicas=1 \
     --discard=old \
@@ -25,7 +25,7 @@ nats stream add FLOWGATE_OUT_A \
     --server="$NATS_URL" \
     --subjects="flowgate.out.threshold" \
     --retention=limits \
-    --max-age=1h \
+    --max-age=10m \
     --storage=file \
     --replicas=1 \
     --discard=old \
@@ -35,7 +35,7 @@ nats stream add FLOWGATE_OUT_B \
     --server="$NATS_URL" \
     --subjects="flowgate.out.buffered" \
     --retention=limits \
-    --max-age=1h \
+    --max-age=10m \
     --storage=file \
     --replicas=1 \
     --discard=old \
