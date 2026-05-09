@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/flowgate-service", "crates/flowgate-producer"]
+members = ["crates/flowgate-service", "crates/flowgate-producer", "crates/flowgate-dashboard"]
 
 [workspace.package]
 version = "0.1.0"
