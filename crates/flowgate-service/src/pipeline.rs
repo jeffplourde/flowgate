@@ -248,6 +248,15 @@ mod publish_latency {
     }
 }
 
+fn streaming_drain_interval(config: &Config) -> Duration {
+    if config.target_rate > 0.0 {
+        let ms = (1000.0 / config.target_rate).max(config.drain_interval_ms as f64);
+        Duration::from_millis(ms as u64)
+    } else {
+        Duration::from_millis(config.drain_interval_ms)
+    }
+}
+
 pub async fn run_buffer_drainer(
     js: jetstream::Context,
     controller: Arc<Mutex<ThresholdController>>,
@@ -257,7 +266,7 @@ pub async fn run_buffer_drainer(
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
 ) {
     let config = config_rx.borrow_and_update().clone();
-    let mut interval = tokio::time::interval(Duration::from_millis(config.drain_interval_ms));
+    let mut interval = tokio::time::interval(streaming_drain_interval(&config));
     let mut batch_interval =
         tokio::time::interval(Duration::from_millis(config.max_buffer_duration_ms));
     let mut current_algorithm = config.algorithm;
@@ -344,13 +353,17 @@ pub async fn run_buffer_drainer(
                 }
                 let config = config_rx.borrow_and_update().clone();
                 current_algorithm = config.algorithm;
-                interval = tokio::time::interval(Duration::from_millis(config.drain_interval_ms));
+                interval = tokio::time::interval(streaming_drain_interval(&config));
                 batch_interval = tokio::time::interval(Duration::from_millis(
                     config.max_buffer_duration_ms,
                 ));
                 let mut buf = buffer.lock().await;
                 buf.set_max_duration(config.max_buffer_duration_ms);
-                info!(algorithm = ?current_algorithm, "buffer drainer config updated");
+                info!(
+                    algorithm = ?current_algorithm,
+                    drain_interval_ms = streaming_drain_interval(&config).as_millis() as u64,
+                    "buffer drainer config updated"
+                );
             }
             _ = shutdown.recv() => {
                 info!("buffer drainer shutting down");
