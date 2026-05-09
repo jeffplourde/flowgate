@@ -84,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tx_clone = event_tx.clone();
     tokio::spawn(async move {
         if let Err(e) =
-            ws::subscribe_output_stream(js_clone, "flowgate.out.threshold", "a", tx_clone).await
+            ws::subscribe_output_stream(js_clone, "FLOWGATE_OUT_A", "a", tx_clone).await
         {
             tracing::error!(error = %e, "output stream subscriber A failed");
         }
@@ -94,7 +94,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tx_clone = event_tx.clone();
     tokio::spawn(async move {
         if let Err(e) =
-            ws::subscribe_output_stream(js_clone, "flowgate.out.buffered", "b", tx_clone).await
+            ws::subscribe_output_stream(js_clone, "FLOWGATE_OUT_B", "b", tx_clone).await
         {
             tracing::error!(error = %e, "output stream subscriber B failed");
         }

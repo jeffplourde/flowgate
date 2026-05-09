@@ -64,20 +64,13 @@ async fn handle_socket(socket: WebSocket, state: Arc<AppState>) {
 
 pub async fn subscribe_output_stream(
     js: async_nats::jetstream::Context,
-    subject: &str,
+    stream_name: &str,
     instance: &str,
     tx: broadcast::Sender<Event>,
 ) -> Result<(), async_nats::Error> {
-    let stream_name = format!("DASHBOARD_{}", instance.to_uppercase());
     let consumer_name = format!("dashboard-{instance}");
 
-    let stream = js
-        .get_or_create_stream(async_nats::jetstream::stream::Config {
-            name: stream_name.clone(),
-            subjects: vec![subject.to_string()],
-            ..Default::default()
-        })
-        .await?;
+    let stream = js.get_stream(stream_name).await?;
 
     let consumer = stream
         .get_or_create_consumer(
@@ -90,7 +83,7 @@ pub async fn subscribe_output_stream(
         )
         .await?;
 
-    info!(subject, instance, "subscribing to output stream");
+    info!(stream_name, instance, "subscribing to output stream");
 
     let mut messages = consumer.messages().await?;
 
