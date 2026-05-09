@@ -1,4 +1,9 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
+
+interface ConfigEntry {
+  key: string;
+  value: string;
+}
 
 interface Props {
   updateConfig: (instance: string, key: string, value: string) => Promise<void>;
@@ -11,6 +16,21 @@ export function ProducerPanel({ updateConfig }: Props) {
   const [maxBatch, setMaxBatch] = useState(5000);
   const [distribution, setDistribution] = useState("beta");
   const [variance, setVariance] = useState(0.3);
+
+  useEffect(() => {
+    fetch("/api/config/producer")
+      .then((r) => r.json())
+      .then((entries: ConfigEntry[]) => {
+        const m = Object.fromEntries(entries.map((e) => [e.key, e.value]));
+        if (m.num_clients) setNumClients(parseInt(m.num_clients));
+        if (m.time_compression) setTimeCompression(parseFloat(m.time_compression));
+        if (m.min_batch_size) setMinBatch(parseInt(m.min_batch_size));
+        if (m.max_batch_size) setMaxBatch(parseInt(m.max_batch_size));
+        if (m.distribution) setDistribution(m.distribution);
+        if (m.distribution_variance) setVariance(parseFloat(m.distribution_variance));
+      })
+      .catch(() => {});
+  }, []);
 
   const update = useCallback(
     (key: string, value: string) => updateConfig("producer", key, value),

@@ -1,4 +1,9 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
+
+interface ConfigEntry {
+  key: string;
+  value: string;
+}
 
 interface Props {
   updateConfig: (instance: string, key: string, value: string) => Promise<void>;
@@ -12,6 +17,30 @@ export function ControlPanel({ updateConfig }: Props) {
   const [kp, setKp] = useState("0.0004");
   const [ki, setKi] = useState("0.00004");
   const [kd, setKd] = useState("0.00001");
+
+  useEffect(() => {
+    const load = async (instance: string) => {
+      try {
+        const resp = await fetch(`/api/config/${instance}`);
+        const entries: ConfigEntry[] = await resp.json();
+        const map = Object.fromEntries(entries.map((e) => [e.key, e.value]));
+        return map;
+      } catch {
+        return {};
+      }
+    };
+
+    Promise.all([load("a"), load("b")]).then(([a, b]) => {
+      if (a.target_rate) setTargetRate(parseFloat(a.target_rate));
+      if (a.algorithm) setAlgoA(a.algorithm);
+      if (b.algorithm) setAlgoB(b.algorithm);
+      if (b.max_buffer_duration_ms)
+        setBufferDuration(parseInt(b.max_buffer_duration_ms));
+      if (a.kp) setKp(a.kp);
+      if (a.ki) setKi(a.ki);
+      if (a.kd) setKd(a.kd);
+    });
+  }, []);
 
   const applyBoth = useCallback(
     async (key: string, value: string) => {
