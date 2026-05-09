@@ -67,4 +67,14 @@ seed_bucket() {
 seed_bucket "flowgate-config-a" "pid"
 seed_bucket "flowgate-config-b" "buffered_streaming"
 
+echo "Creating producer config bucket..."
+nats kv add flowgate-producer-config --server="$NATS_URL" --history=5 2>/dev/null || echo "flowgate-producer-config already exists"
+
+nats kv put flowgate-producer-config num_clients "70" --server="$NATS_URL" 2>/dev/null || true
+nats kv put flowgate-producer-config time_compression "60" --server="$NATS_URL" 2>/dev/null || true
+nats kv put flowgate-producer-config min_batch_size "100" --server="$NATS_URL" 2>/dev/null || true
+nats kv put flowgate-producer-config max_batch_size "5000" --server="$NATS_URL" 2>/dev/null || true
+nats kv put flowgate-producer-config distribution "beta" --server="$NATS_URL" 2>/dev/null || true
+nats kv put flowgate-producer-config distribution_variance "0.3" --server="$NATS_URL" 2>/dev/null || true
+
 echo "NATS setup complete!"

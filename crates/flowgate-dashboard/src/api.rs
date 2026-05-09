@@ -21,6 +21,7 @@ fn bucket_name(state: &AppState, instance: &str) -> Option<String> {
     match instance {
         "a" => Some(state.kv_bucket_a.clone()),
         "b" => Some(state.kv_bucket_b.clone()),
+        "producer" => Some(state.kv_bucket_producer.clone()),
         _ => None,
     }
 }

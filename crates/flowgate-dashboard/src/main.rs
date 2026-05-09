@@ -39,6 +39,13 @@ struct Args {
     #[arg(long, env = "KV_BUCKET_B", default_value = "flowgate-config-b")]
     kv_bucket_b: String,
 
+    #[arg(
+        long,
+        env = "KV_BUCKET_PRODUCER",
+        default_value = "flowgate-producer-config"
+    )]
+    kv_bucket_producer: String,
+
     #[arg(long, env = "STATIC_DIR", default_value = "./dashboard/dist")]
     static_dir: String,
 }
@@ -47,6 +54,7 @@ pub struct AppState {
     pub js: async_nats::jetstream::Context,
     pub kv_bucket_a: String,
     pub kv_bucket_b: String,
+    pub kv_bucket_producer: String,
     pub flowgate_a_metrics: String,
     pub flowgate_b_metrics: String,
     pub event_tx: broadcast::Sender<ws::Event>,
@@ -74,6 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         js,
         kv_bucket_a: args.kv_bucket_a,
         kv_bucket_b: args.kv_bucket_b,
+        kv_bucket_producer: args.kv_bucket_producer,
         flowgate_a_metrics: args.flowgate_a_metrics.clone(),
         flowgate_b_metrics: args.flowgate_b_metrics.clone(),
         event_tx: event_tx.clone(),
@@ -83,8 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let js_clone = state.js.clone();
     let tx_clone = event_tx.clone();
     tokio::spawn(async move {
-        if let Err(e) =
-            ws::subscribe_output_stream(js_clone, "FLOWGATE_OUT_A", "a", tx_clone).await
+        if let Err(e) = ws::subscribe_output_stream(js_clone, "FLOWGATE_OUT_A", "a", tx_clone).await
         {
             tracing::error!(error = %e, "output stream subscriber A failed");
         }
@@ -93,8 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let js_clone = state.js.clone();
     let tx_clone = event_tx.clone();
     tokio::spawn(async move {
-        if let Err(e) =
-            ws::subscribe_output_stream(js_clone, "FLOWGATE_OUT_B", "b", tx_clone).await
+        if let Err(e) = ws::subscribe_output_stream(js_clone, "FLOWGATE_OUT_B", "b", tx_clone).await
         {
             tracing::error!(error = %e, "output stream subscriber B failed");
         }

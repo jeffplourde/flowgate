@@ -1,6 +1,7 @@
 import { useFlowgateSocket } from "./hooks/useFlowgateSocket";
 import { InstancePanel } from "./components/InstancePanel";
 import { ControlPanel } from "./components/ControlPanel";
+import { ProducerPanel } from "./components/ProducerPanel";
 
 function App() {
   const { instanceA, instanceB, connected, updateConfig } =
@@ -67,7 +68,10 @@ function App() {
         />
       </div>
 
-      <ControlPanel updateConfig={updateConfig} />
+      <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+        <ControlPanel updateConfig={updateConfig} />
+        <ProducerPanel updateConfig={updateConfig} />
+      </div>
     </div>
   );
 }

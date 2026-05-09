@@ -1,13 +1,19 @@
 use std::time::Duration;
 
+use async_nats::jetstream;
 use clap::Parser;
-use rand::Rng;
+use futures::StreamExt;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use rand_distr::{Beta, Distribution, Normal, Uniform};
-use tokio::time::Instant;
-use tracing::info;
+use tokio::sync::watch;
+use tracing::{info, warn};
 
 #[derive(Parser)]
-#[command(name = "flowgate-producer", about = "Synthetic prediction generator")]
+#[command(
+    name = "flowgate-producer",
+    about = "Multi-client batch prediction simulator"
+)]
 struct Args {
     #[arg(long, env = "NATS_URL", default_value = "nats://localhost:4222")]
     nats_url: String,
@@ -15,20 +21,77 @@ struct Args {
     #[arg(long, env = "SUBJECT", default_value = "flowgate.in.synthetic")]
     subject: String,
 
-    #[arg(long, env = "DISTRIBUTION", default_value = "beta")]
+    #[arg(
+        long,
+        env = "NATS_KV_BUCKET",
+        default_value = "flowgate-producer-config"
+    )]
+    kv_bucket: String,
+}
+
+#[derive(Debug, Clone)]
+struct ProducerConfig {
+    num_clients: u64,
+    time_compression: f64,
+    min_batch_size: u64,
+    max_batch_size: u64,
     distribution: DistributionType,
+    distribution_variance: f64,
+}
 
-    #[arg(long, env = "RATE", default_value_t = 100.0)]
-    rate: f64,
+impl Default for ProducerConfig {
+    fn default() -> Self {
+        Self {
+            num_clients: 70,
+            time_compression: 60.0,
+            min_batch_size: 100,
+            max_batch_size: 5000,
+            distribution: DistributionType::Beta,
+            distribution_variance: 0.3,
+        }
+    }
+}
 
-    #[arg(long, env = "BURST_INTERVAL", default_value_t = 0.0)]
-    burst_interval: f64,
+impl ProducerConfig {
+    fn apply_kv_entry(&mut self, key: &str, value: &str) {
+        match key {
+            "num_clients" => {
+                if let Ok(v) = value.parse() {
+                    self.num_clients = v;
+                }
+            }
+            "time_compression" => {
+                if let Ok(v) = value.parse() {
+                    self.time_compression = v;
+                }
+            }
+            "min_batch_size" => {
+                if let Ok(v) = value.parse() {
+                    self.min_batch_size = v;
+                }
+            }
+            "max_batch_size" => {
+                if let Ok(v) = value.parse() {
+                    self.max_batch_size = v;
+                }
+            }
+            "distribution" => {
+                if let Ok(v) = value.parse() {
+                    self.distribution = v;
+                }
+            }
+            "distribution_variance" => {
+                if let Ok(v) = value.parse() {
+                    self.distribution_variance = v;
+                }
+            }
+            _ => {}
+        }
+    }
 
-    #[arg(long, env = "BURST_MULTIPLIER", default_value_t = 5.0)]
-    burst_multiplier: f64,
-
-    #[arg(long, env = "BURST_DURATION", default_value_t = 2.0)]
-    burst_duration: f64,
+    fn batch_interval(&self) -> Duration {
+        Duration::from_secs_f64(3600.0 / self.time_compression)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -47,9 +110,7 @@ impl std::str::FromStr for DistributionType {
             "beta" => Ok(Self::Beta),
             "uniform" => Ok(Self::Uniform),
             "bimodal" => Ok(Self::Bimodal),
-            _ => Err(format!(
-                "unknown distribution: {s} (expected: normal, beta, uniform, bimodal)"
-            )),
+            _ => Err(format!("unknown distribution: {s}")),
         }
     }
 }
@@ -65,20 +126,128 @@ impl std::fmt::Display for DistributionType {
     }
 }
 
-fn sample_score(rng: &mut impl Rng, dist: &DistributionType) -> f64 {
+fn sample_score(rng: &mut impl Rng, dist: &DistributionType, variance_shift: f64) -> f64 {
     let raw: f64 = match dist {
-        DistributionType::Normal => Normal::new(0.5, 0.15).unwrap().sample(rng),
-        DistributionType::Beta => Beta::new(2.0, 5.0).unwrap().sample(rng),
+        DistributionType::Normal => {
+            let mean = 0.5 + variance_shift * 0.2;
+            Normal::new(mean.clamp(0.1, 0.9), 0.15).unwrap().sample(rng)
+        }
+        DistributionType::Beta => {
+            let a = (2.0 + variance_shift * 2.0).max(0.5);
+            let b = (5.0 - variance_shift * 2.0).max(0.5);
+            Beta::new(a, b).unwrap().sample(rng)
+        }
         DistributionType::Uniform => Uniform::new(0.0, 1.0).unwrap().sample(rng),
         DistributionType::Bimodal => {
+            let low_mean = 0.3 + variance_shift * 0.1;
+            let high_mean = 0.8 - variance_shift * 0.1;
             if rng.random_bool(0.5) {
-                Normal::new(0.3, 0.1).unwrap().sample(rng)
+                Normal::new(low_mean.clamp(0.1, 0.5), 0.1)
+                    .unwrap()
+                    .sample(rng)
             } else {
-                Normal::new(0.8, 0.1).unwrap().sample(rng)
+                Normal::new(high_mean.clamp(0.5, 0.95), 0.1)
+                    .unwrap()
+                    .sample(rng)
             }
         }
     };
     raw.clamp(0.0, 1.0)
+}
+
+async fn load_config(store: &async_nats::jetstream::kv::Store) -> ProducerConfig {
+    let mut config = ProducerConfig::default();
+    let keys = [
+        "num_clients",
+        "time_compression",
+        "min_batch_size",
+        "max_batch_size",
+        "distribution",
+        "distribution_variance",
+    ];
+    for key in keys {
+        if let Ok(Some(bytes)) = store.get(key).await {
+            if let Ok(value) = std::str::from_utf8(&bytes) {
+                config.apply_kv_entry(key, value);
+            }
+        }
+    }
+    config
+}
+
+async fn watch_config(store: async_nats::jetstream::kv::Store, tx: watch::Sender<ProducerConfig>) {
+    let Ok(mut watcher) = store.watch_all().await else {
+        warn!("failed to start producer config watcher");
+        return;
+    };
+
+    while let Some(entry) = watcher.next().await {
+        if let Ok(entry) = entry {
+            if let Ok(value) = std::str::from_utf8(&entry.value) {
+                let mut config = tx.borrow().clone();
+                config.apply_kv_entry(&entry.key, value);
+                info!(key = %entry.key, value, "producer config updated");
+                let _ = tx.send(config);
+            }
+        }
+    }
+}
+
+async fn client_loop(
+    client_id: u64,
+    js: jetstream::Context,
+    subject: String,
+    config_rx: watch::Receiver<ProducerConfig>,
+    mut shutdown: tokio::sync::broadcast::Receiver<()>,
+    phase_offset: f64,
+    variance_shift: f64,
+) {
+    let mut rng = StdRng::seed_from_u64(client_id);
+
+    tokio::select! {
+        _ = tokio::time::sleep(Duration::from_secs_f64(phase_offset)) => {}
+        _ = shutdown.recv() => { return; }
+    }
+
+    loop {
+        let config = config_rx.borrow().clone();
+        let batch_size = rng.random_range(config.min_batch_size..=config.max_batch_size);
+        let batch_id = uuid::Uuid::new_v4().to_string();
+
+        info!(
+            client_id,
+            batch_size,
+            batch_id = %batch_id,
+            "sending batch"
+        );
+
+        for seq in 0..batch_size {
+            let score = sample_score(&mut rng, &config.distribution, variance_shift);
+
+            let mut headers = async_nats::HeaderMap::new();
+            headers.insert("Flowgate-Score", format!("{score:.6}").as_str());
+            headers.insert("Flowgate-Client-Id", client_id.to_string().as_str());
+            headers.insert("Flowgate-Batch-Id", batch_id.as_str());
+            headers.insert("Flowgate-Batch-Seq", seq.to_string().as_str());
+            headers.insert("Flowgate-Batch-Size", batch_size.to_string().as_str());
+
+            let payload = format!(r#"{{"client":{client_id},"seq":{seq}}}"#);
+
+            if let Err(e) = js
+                .publish_with_headers(subject.clone(), headers, payload.into())
+                .await
+            {
+                warn!(client_id, error = %e, "publish failed");
+                break;
+            }
+        }
+
+        let interval = config.batch_interval();
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => {}
+            _ = shutdown.recv() => { return; }
+        }
+    }
 }
 
 #[tokio::main]
@@ -94,74 +263,71 @@ async fn main() -> Result<(), async_nats::Error> {
 
     let client = async_nats::connect(&args.nats_url).await?;
     let js = async_nats::jetstream::new(client);
+    info!(url = %args.nats_url, "connected to NATS");
+
+    let kv_store = js
+        .create_key_value(async_nats::jetstream::kv::Config {
+            bucket: args.kv_bucket.clone(),
+            history: 5,
+            ..Default::default()
+        })
+        .await?;
+
+    let initial_config = load_config(&kv_store).await;
+    let (config_tx, config_rx) = watch::channel(initial_config.clone());
+
     info!(
-        url = %args.nats_url,
-        subject = %args.subject,
-        distribution = %args.distribution,
-        rate = args.rate,
+        num_clients = initial_config.num_clients,
+        time_compression = initial_config.time_compression,
+        batch_interval_secs = initial_config.batch_interval().as_secs_f64(),
         "producer starting"
     );
 
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+
+    tokio::spawn({
+        let store = kv_store.clone();
+        async move {
+            watch_config(store, config_tx).await;
+        }
+    });
+
     let mut rng = rand::rng();
-    let base_interval = Duration::from_secs_f64(1.0 / args.rate);
-    let burst_interval = if args.burst_interval > 0.0 {
-        Some(Duration::from_secs_f64(args.burst_interval))
-    } else {
-        None
-    };
-    let burst_duration = Duration::from_secs_f64(args.burst_duration);
-
-    let mut seq: u64 = 0;
-    let start = Instant::now();
-    let mut next_burst = burst_interval.map(|bi| start + bi);
-    let mut in_burst = false;
-    let mut burst_end = start;
-
-    loop {
-        let now = Instant::now();
-
-        if let Some(nb) = next_burst {
-            if now >= nb && !in_burst {
-                in_burst = true;
-                burst_end = now + burst_duration;
-                info!("burst started");
-            }
-        }
-        if in_burst && now >= burst_end {
-            in_burst = false;
-            next_burst = burst_interval.map(|bi| now + bi);
-            info!("burst ended");
-        }
-
-        let current_interval = if in_burst {
-            Duration::from_secs_f64(1.0 / (args.rate * args.burst_multiplier))
-        } else {
-            base_interval
-        };
-
-        let score = sample_score(&mut rng, &args.distribution);
-        seq += 1;
-
-        let mut headers = async_nats::HeaderMap::new();
-        headers.insert("Flowgate-Score", format!("{score:.6}").as_str());
-        headers.insert("Flowgate-Source", "flowgate-producer");
-        headers.insert(
-            "Flowgate-Distribution",
-            args.distribution.to_string().as_str(),
-        );
-        headers.insert("Flowgate-Seq", seq.to_string().as_str());
-
-        // Body is an opaque payload — in a real system this would be
-        // whatever the ML pipeline produces (protobuf, msgpack, etc.)
-        let payload = format!(r#"{{"demo":true,"seq":{seq}}}"#);
-
-        js.publish_with_headers(args.subject.clone(), headers, payload.into())
-            .await?;
-
-        if seq.is_multiple_of(1000) {
-            info!(seq, score, in_burst, "published 1000 messages");
-        }
-
-        tokio::time::sleep(current_interval).await;
+    let mut client_handles = Vec::new();
+    for id in 0..initial_config.num_clients {
+        let js = js.clone();
+        let subject = args.subject.clone();
+        let config_rx = config_rx.clone();
+        let shutdown_rx = shutdown_tx.subscribe();
+        let phase_offset = rng.random_range(0.0..initial_config.batch_interval().as_secs_f64());
+        let variance_shift =
+            (rng.random::<f64>() - 0.5) * 2.0 * initial_config.distribution_variance;
+        client_handles.push(tokio::spawn(async move {
+            client_loop(
+                id,
+                js,
+                subject,
+                config_rx,
+                shutdown_rx,
+                phase_offset,
+                variance_shift,
+            )
+            .await;
+        }));
     }
+
+    info!(
+        num_clients = initial_config.num_clients,
+        "all clients spawned"
+    );
+
+    tokio::signal::ctrl_c().await?;
+    info!("shutting down");
+    let _ = shutdown_tx.send(());
+
+    for handle in client_handles {
+        let _ = handle.await;
+    }
+
+    Ok(())
 }

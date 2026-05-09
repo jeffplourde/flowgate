@@ -61,11 +61,7 @@ services:
         condition: service_completed_successfully
     environment:
       NATS_URL: nats://nats:4222
-      DISTRIBUTION: beta
-      RATE: "500"
-      BURST_INTERVAL: "30"
-      BURST_MULTIPLIER: "5"
-      BURST_DURATION: "2"
+      NATS_KV_BUCKET: flowgate-producer-config
       RUST_LOG: flowgate_producer=info
 
   dashboard:
@@ -81,6 +77,7 @@ services:
       FLOWGATE_B_METRICS: http://flowgate-buffered:9090
       KV_BUCKET_A: flowgate-config-a
       KV_BUCKET_B: flowgate-config-b
+      KV_BUCKET_PRODUCER: flowgate-producer-config
     ports:
       - "3000:3000"
 
